@@ -1,0 +1,16 @@
+# Galaxy 诊断工具默认配置
+# 部署时可通过环境变量覆盖（前缀 GALAXY_），如 GALAXY_LLM_BASE_URL
+
+llm:
+  base_url: "http://localhost:11434/v1"   # Ollama 默认地址，可改为 vLLM 等地址
+  model: "qwen3:8b"
+  api_key: "ollama"                        # Ollama 不需要真实 key，OpenAI SDK 要求非空
+  timeout: 120
+  max_retries: 3
+
+hardware:
+  min_cpu_cores: 4
+  min_ram_gb: 8.0
+  min_gpu_vram_gb: 6.0                     # GPU 存在时才检查
+  min_disk_gb: 10.0
+  gpu_required: false                      # GPU 可选，无 GPU 以 CPU 模式运行

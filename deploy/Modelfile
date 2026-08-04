@@ -1,0 +1,16 @@
+# Ollama 模型定义文件 - qwen3:8b
+# 用于离线导入模型到 Ollama
+#
+# 用法：
+#   1. 将 GGUF 模型文件与本文件放在同一目录
+#   2. 执行: ollama create qwen3:8b -f deploy/Modelfile
+#
+# GGUF 文件获取（在有网机器上）：
+#   方式一：从 HuggingFace / ModelScope 下载
+#     https://huggingface.co/Qwen/Qwen3-8B-GGUF
+#     选择 Q4_K_M 量化版本（约 4.9 GB）
+#   方式二：从已有 Ollama 的机器导出
+#     ollama pull qwen3:8b   # 联网拉取
+#     ollama show qwen3:8b --modelfile   # 查看其 Modelfile
+
+FROM ./qwen3-8b-q4_k_m.gguf

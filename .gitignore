@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# 离线依赖 wheel 文件（体积大，不入库）
+deploy/wheels/
+
+# 模型文件（体积大，不入库）
+*.gguf
+
+# 测试/覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# 任务书等外部文档（非项目代码）
+任务书.txt
