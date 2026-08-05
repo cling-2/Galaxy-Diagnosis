@@ -3,16 +3,16 @@
 #
 # 前置条件：
 #   deploy/offline/ 目录已存在（由 prepare_offline.sh 生成），包含：
-#     - wheels/      Python 依赖
-#     - ollama       Ollama 二进制
-#     - *.gguf       模型文件
+#     - wheels/                    Python 依赖
+#     - ollama-linux-amd64.tar.zst Ollama 安装包
+#     - *.gguf                     模型文件
 #
 # 用法：
 #   bash deploy/install_offline.sh
 #
-# 可选：使用虚拟环境
-#   python3 -m venv venv && source venv/bin/activate
-#   bash deploy/install_offline.sh
+# 虚拟环境：
+#   脚本会自动检测并创建 Python 虚拟环境（项目目录下的 venv/）。
+#   后续运行 main.py 时需先激活：source venv/bin/activate
 
 set -euo pipefail
 
@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OFFLINE_DIR="$SCRIPT_DIR/offline"
 REQ_FILE="$PROJECT_DIR/requirements.txt"
+VENV_DIR="$PROJECT_DIR/venv"
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -41,6 +42,26 @@ echo "  Galaxy-Diag 离线部署"
 echo "=============================="
 echo ""
 
+# ---------- 0. Python 虚拟环境 ----------
+echo "==> [0/3] 准备 Python 虚拟环境..."
+
+if [ -d "$VENV_DIR/bin" ] && [ -f "$VENV_DIR/bin/python3" ]; then
+    ok "虚拟环境已存在: $VENV_DIR"
+else
+    echo "    创建虚拟环境: $VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+    if [ ! -f "$VENV_DIR/bin/python3" ]; then
+        fail "虚拟环境创建失败"
+        echo "💡 请确认 python3-venv 已安装: apt-get install python3-venv"
+        exit 1
+    fi
+    ok "虚拟环境创建成功"
+fi
+
+# 激活虚拟环境（仅影响本脚本进程，不污染用户 shell）
+source "$VENV_DIR/bin/activate"
+ok "已激活虚拟环境: $(which python3)"
+
 # ---------- 1. 安装 Ollama ----------
 echo "==> [1/3] 安装 Ollama..."
 
@@ -57,7 +78,7 @@ else
         echo "    从裸二进制安装..."
         install -m 0755 "$OLLAMA_BIN" /usr/local/bin/ollama
     elif [ -n "$OLLAMA_TARZST" ]; then
-        # .tar.zst 压缩包方式（GitHub Releases 官方格式）
+        # .tar.zst 压缩包方式（Ollama 官方格式，含二进制+库文件）
         echo "    从 $OLLAMA_TARZST 解压安装..."
         # 检查 zstd 是否可用
         if ! command -v zstd &>/dev/null; then
@@ -65,18 +86,32 @@ else
             echo "💡 安装 zstd: apt-get install zstd（离线环境需提前准备）"
             exit 1
         fi
+        # 解压到临时目录
         zstd -d "$OLLAMA_TARZST" -o /tmp/ollama.tar --force
-        tar xf /tmp/ollama.tar -C /tmp/
-        # 从解压目录找到 ollama 二进制
-        EXTRACTED_BIN=$(find /tmp -name "ollama" -type f -executable 2>/dev/null | head -1)
+        mkdir -p /tmp/ollama_extract
+        tar xf /tmp/ollama.tar -C /tmp/ollama_extract/
+
+        # 安装 ollama 二进制
+        EXTRACTED_BIN=$(find /tmp/ollama_extract -name "ollama" -type f -executable 2>/dev/null | head -1)
         if [ -z "$EXTRACTED_BIN" ]; then
             fail "解压后未找到 ollama 二进制"
-            rm -f /tmp/ollama.tar
+            rm -rf /tmp/ollama.tar /tmp/ollama_extract
             exit 1
         fi
         install -m 0755 "$EXTRACTED_BIN" /usr/local/bin/ollama
-        rm -f /tmp/ollama.tar
-        rm -rf /tmp/ollama* 2>/dev/null || true
+
+        # 安装 lib/ollama/ 目录（含 llama-quantize 等运行时库，ollama create 需要）
+        EXTRACTED_LIB=$(find /tmp/ollama_extract -type d -name "ollama" -path "*/lib/ollama" 2>/dev/null | head -1)
+        if [ -n "$EXTRACTED_LIB" ]; then
+            mkdir -p /usr/local/lib/ollama
+            cp -r "$EXTRACTED_LIB"/* /usr/local/lib/ollama/
+            chmod -R 0755 /usr/local/lib/ollama
+            ok "运行时库已安装: $(ls /usr/local/lib/ollama/ | wc -l) 个文件"
+        else
+            echo "    ⚠ 未找到 lib/ollama 目录，ollama create 导入模型可能失败"
+        fi
+
+        rm -rf /tmp/ollama.tar /tmp/ollama_extract
     else
         fail "未找到 Ollama 安装包（裸二进制或 .tar.zst）"
         echo "💡 请先在有网机器上执行 prepare_offline.sh 下载"
@@ -194,4 +229,5 @@ echo "  模型:    $MODEL_NAME"
 echo "  依赖:    $(python3 -c 'import openai, httpx, yaml, rich; print(\"OK\")' 2>&1)"
 echo ""
 echo "下一步："
+echo "  source venv/bin/activate"
 echo "  python3 main.py"
