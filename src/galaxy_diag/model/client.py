@@ -11,8 +11,8 @@ from typing import Any, Iterator
 
 from openai import OpenAI
 
-from config.schema import LLMConfig
-from errors import ModelCallError
+from galaxy_diag.config.defaults import LLMConfig
+from galaxy_diag.shared.errors import ModelCallError
 
 
 @dataclass

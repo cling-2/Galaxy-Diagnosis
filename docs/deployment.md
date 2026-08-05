@@ -80,23 +80,21 @@ cd galaxy-diag
 ### Step 2：一键离线安装
 
 ```bash
-# 建议使用虚拟环境
-python3 -m venv venv
-source venv/bin/activate
-
-# 一键安装 Ollama + 导入模型 + Python 依赖
+# 一键安装 Ollama + 导入模型 + 创建 venv + 安装 Python 依赖
 bash deploy/install_offline.sh
 ```
 
-`install_offline.sh` 会自动完成三件事：
-1. 安装 Ollama 二进制到 `/usr/local/bin/`，创建 systemd 服务并启动
-2. 从 `deploy/offline/*.gguf` 通过 `ollama create` 离线导入模型
-3. 从 `deploy/offline/wheels/` 离线安装 Python 依赖
+`install_offline.sh` 会自动完成四件事：
+1. 检测并创建 Python 虚拟环境（`venv/`），若不存在则自动创建
+2. 安装 Ollama（解压 `.tar.zst`，安装二进制 + 运行时库到 `/usr/local/lib/ollama/`），创建 systemd 服务并启动，绑定 `127.0.0.1:11434`
+3. 从 `deploy/offline/*.gguf` 通过 `ollama create` 离线导入模型
+4. 在 venv 内从 `deploy/offline/wheels/` 离线安装 Python 依赖
 
 ### Step 3：启动系统
 
 ```bash
-python3 main.py
+source venv/bin/activate
+galaxy-diag
 ```
 
 预期输出：
@@ -139,7 +137,7 @@ sudo systemctl status ollama
 # 再次运行
 cd galaxy-diag
 source venv/bin/activate
-python3 main.py
+galaxy-diag
 # 应正常启动，无需任何额外操作
 ```
 
@@ -192,27 +190,28 @@ ollama list
 部署完成后，按以下步骤验证红线 1（零公网依赖）：
 
 ```bash
-# 1. 断开公网出站（仅保留内网）
+# 1. 确认 Ollama 仅监听本地
+ss -tlnp | grep 11434
+# 应显示 127.0.0.1:11434，而非 0.0.0.0:11434
+
+# 2. 断开公网出站（仅保留内网）
 sudo iptables -A OUTPUT -d <内网网段> -j ACCEPT
 sudo iptables -A OUTPUT -j DROP
 
-# 2. 重启系统
+# 3. 重启系统
 sudo reboot
 
-# 3. 执行完整启动流程
-cd galaxy-diag && source venv/bin/activate && python3 main.py
+# 4. 执行完整启动流程
+cd galaxy-diag && source venv/bin/activate && galaxy-diag
 
-# 4. 检查日志中无对外网域名的请求
+# 5. 检查日志中无对外网域名的请求
 journalctl -u ollama --since "1 hour ago" | grep -iE "(openai|huggingface|google|amazon)"
 grep -riE "(openai\.com|huggingface\.co)" galaxy-diag/
 
-# 5. 验证模型推理可用
-python3 -c "
-from model.adapter import ModelAdapter
-from config.schema import LLMConfig
-a = ModelAdapter(LLMConfig())
-print(a.chat([{'role':'user','content':'hi'}], max_tokens=10))
-"
+# 6. 验证模型推理可用
+curl http://127.0.0.1:11434/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3:8b","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
 ```
 
 ## 故障排查
@@ -220,7 +219,11 @@ print(a.chat([{'role':'user','content':'hi'}], max_tokens=10))
 | 问题 | 原因 | 解决方法 |
 |------|------|---------|
 | 硬件预检内存显示 0.0 GB | 非 Linux 环境 | 确认目标机器为 Linux，/proc/meminfo 可读 |
-| Ollama 连接拒绝 | 服务未启动 | `systemctl start ollama` 或 `ollama serve &` |
+| Ollama 连接拒绝 | 服务未启动 | `systemctl start ollama` |
+| Ollama 监听 0.0.0.0 | systemd 配置中 OLLAMA_HOST 未绑定 | 编辑 `/etc/systemd/system/ollama.service`，设为 `127.0.0.1:11434`，然后 `systemctl daemon-reload && systemctl restart ollama` |
 | 模型未找到 | 未导入或名称不匹配 | `ollama list` 检查；名称需与 config.yaml 一致 |
-| pip 离线安装失败 | wheel 文件不匹配平台/Python 版本 | 在目标平台执行 `download_wheels.sh` |
+| ollama create 报 llama-quantize not found | Ollama 安装不完整，缺运行时库 | 重新执行 `install_offline.sh`，确保 `lib/ollama/` 目录已安装到 `/usr/local/lib/ollama/` |
+| pip 离线安装失败 | wheel 文件不匹配平台/Python 版本 | 必须用 Docker 容器下载 Linux wheel（`prepare_offline.sh` 已自动处理） |
+| zstd 未安装 | 解压 .tar.zst 需要 | `apt-get install zstd`（需离线准备或预装） |
+| python3-venv 未安装 | 创建虚拟环境需要 | `apt-get install python3-venv`（需离线准备或预装） |
 | 推理超时 | 纯 CPU 环境推理慢 | 正常现象，可增大 config.yaml 中 timeout 值 |

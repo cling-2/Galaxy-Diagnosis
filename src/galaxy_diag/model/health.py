@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 import httpx
 
-from config.schema import LLMConfig
-from model.adapter import ModelAdapter
+from galaxy_diag.config.defaults import LLMConfig
+from galaxy_diag.model.client import ModelAdapter
 
 
 @dataclass

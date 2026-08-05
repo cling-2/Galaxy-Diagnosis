@@ -12,10 +12,10 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
-from config.loader import load_config
-from errors import ConfigError
-from model.health import HealthChecker
-from precheck.hardware import HardwarePrechecker
+from galaxy_diag.config.settings import load_config
+from galaxy_diag.shared.errors import ConfigError
+from galaxy_diag.model.health import HealthChecker
+from galaxy_diag.model.precheck import HardwarePrechecker
 
 console = Console()
 

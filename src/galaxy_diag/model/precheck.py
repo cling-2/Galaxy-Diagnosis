@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 
-from config.schema import HardwareRequirement
+from galaxy_diag.config.defaults import HardwareRequirement
 
 
 @dataclass

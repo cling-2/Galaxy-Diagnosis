@@ -12,7 +12,7 @@
 #
 # 虚拟环境：
 #   脚本会自动检测并创建 Python 虚拟环境（项目目录下的 venv/）。
-#   后续运行 main.py 时需先激活：source venv/bin/activate
+#   后续运行时需先激活：source venv/bin/activate
 
 set -euo pipefail
 
@@ -216,6 +216,13 @@ python3 -m pip install \
     --find-links="$WHEELS_DIR" \
     -r "$REQ_FILE"
 
+# 安装项目本身（src layout），注册 galaxy-diag 命令
+python3 -m pip install \
+    --no-index \
+    --find-links="$WHEELS_DIR" \
+    --no-deps \
+    -e "$PROJECT_DIR"
+
 ok "Python 依赖安装完成"
 
 # ---------- 汇总 ----------
@@ -230,4 +237,4 @@ echo "  依赖:    $(python3 -c 'import openai, httpx, yaml, rich; print(\"OK\")
 echo ""
 echo "下一步："
 echo "  source venv/bin/activate"
-echo "  python3 main.py"
+echo "  galaxy-diag        # 或 python3 -m galaxy_diag"

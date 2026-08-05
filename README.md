@@ -109,25 +109,29 @@
 
 ```
 galaxy-diag/
-├── config/                 # 配置管理
-│   ├── schema.py           #   配置数据类（LLMConfig, HardwareRequirement, AppConfig）
-│   └── loader.py           #   YAML 加载 → 环境变量覆盖 → 校验
-├── model/                  # 模型适配层
-│   ├── adapter.py          #   ModelAdapter：统一 LLM 调用入口
-│   └── health.py           #   推理服务健康检查
-├── precheck/               # 启动前预检
-│   └── hardware.py         #   硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
-├── deploy/                 # 离线部署工具
-│   ├── download_wheels.sh  #   有网机器上下载依赖 wheel
-│   ├── install_offline.sh  #   断网机器上离线安装依赖
-│   ├── Modelfile           #   Ollama 模型定义文件
-│   └── wheels/             #   下载的 wheel 文件（不入库）
-├── docs/
-│   └── deployment.md       # 完整离线部署文档
-├── tests/                  # 测试
-├── config.yaml             # 默认配置（零外网地址）
-├── requirements.txt        # Python 依赖
-└── main.py                 # CLI 入口
+├── bin/galaxy-diag              # CLI 入口脚本
+├── src/galaxy_diag/             # 源码包（src layout）
+│   ├── config/                  #   [配置] 配置加载与数据类
+│   │   ├── settings.py          #     YAML 加载 → 环境变量覆盖 → 校验
+│   │   └── defaults.py          #     配置数据类（LLMConfig, HardwareRequirement, AppConfig）
+│   ├── model/                   #   [A-01] 模型离线部署与推理
+│   │   ├── client.py            #     ModelAdapter：统一 LLM 调用入口（OpenAI 兼容）
+│   │   ├── health.py            #     推理服务健康检查
+│   │   └── precheck.py          #     硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
+│   ├── shared/
+│   │   └── errors.py            #     统一异常体系
+│   └── __main__.py              #   CLI 主入口
+├── deploy/                      # 离线部署工具
+│   ├── prepare_offline.sh       #   有网机器上下载离线介质
+│   ├── install_offline.sh       #   断网机器上离线安装依赖
+│   ├── Modelfile                #   Ollama 模型定义文件
+│   └── offline/                 #   离线介质（不入库）
+├── docs/                        # 文档
+├── tests/                       # 测试
+├── config.yaml                  # 默认配置（零外网地址）
+├── pyproject.toml               # 包定义与入口
+├── requirements.txt             # Python 依赖
+└── README.md
 ```
 
 > 后续按任务书依赖链增量扩展：环境感知(b-) → 诊断分析(c-) → 修复生成(d-) → 安全可控(e-) → CLI 工作流(f-)

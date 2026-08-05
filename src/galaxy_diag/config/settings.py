@@ -3,7 +3,7 @@
 加载优先级：
   1. YAML 配置文件
   2. 环境变量覆盖（前缀 GALAXY_，如 GALAXY_LLM_BASE_URL）
-  3. 代码默认值（schema.py 中的 dataclass 默认值）
+  3. 代码默认值（defaults.py 中的 dataclass 默认值）
 """
 
 import os
@@ -11,8 +11,8 @@ from typing import Any
 
 import yaml
 
-from config.schema import AppConfig, LLMConfig, HardwareRequirement
-from errors import ConfigError
+from galaxy_diag.config.defaults import AppConfig, LLMConfig, HardwareRequirement
+from galaxy_diag.shared.errors import ConfigError
 
 
 # 环境变量到配置字段的映射

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Galaxy-Diag CLI 入口
+# 用法: bin/galaxy-diag [选项]
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 确保已安装包（editable 模式），然后运行
+if ! command -v galaxy-diag &>/dev/null; then
+    pip install -e "$PROJECT_DIR" --quiet 2>/dev/null || true
+fi
+
+exec python -m galaxy_diag "$@"

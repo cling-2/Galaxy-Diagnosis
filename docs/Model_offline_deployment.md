@@ -1,4 +1,4 @@
-# 模型适配层与硬件预检设计（第一步）
+# 模型适配与硬件预检（REQ-A-01）
 
 - **日期**：2026-08-04
 - **对应需求**：REQ-A-01（模型离线部署与运行）、技术约束 8.1（模型协议）
@@ -61,8 +61,17 @@ galaxy-diag/
 ├── precheck/
 │   ├── __init__.py
 │   └── hardware.py         # 硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
+├── deploy/
+│   ├── prepare_offline.sh  # 联网准备机：下载全部离线介质
+│   ├── install_offline.sh  # 断网客户机：一键安装 Ollama + 模型 + 依赖
+│   └── Modelfile           # Ollama 模型定义文件（离线导入参考）
+├── docs/
+│   ├── 2026-08-04-model-adapter-precheck-design.md  # 本设计文档
+│   └── deployment.md       # 完整离线部署文档
+├── tests/
 ├── config.yaml             # 默认配置（零外网地址，默认连本地 Ollama）
 ├── requirements.txt        # 最小依赖集
+├── errors.py               # 统一错误类（GalaxyDiagError + 子类）
 └── main.py                 # CLI 入口：预检 → 健康检查 → 启动
 ```
 
@@ -95,6 +104,7 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 - `api_key` 默认值 `"ollama"`：OpenAI SDK 要求非空，而 Ollama 不验证 key，部署时无需手动填 key。
 - 环境变量前缀 `GALAXY_`：避免与其他工具的环境变量冲突。
 - 无硬编码外网地址：完全符合红线 1 + 约束 8.1。
+- Ollama 绑定 `127.0.0.1:11434`：仅本地访问，防止局域网内其他机器误调用推理服务。
 
 ## 5. Model Adapter
 
@@ -251,16 +261,42 @@ rich>=13.0.0            # CLI 终端美化输出
 
 测试框架：pytest。
 
+## 9.5 离线部署机制
+
+**核心原则**：下载机和安装机是两台不同的机器。断网客户机假设完全无网络，所有介质在联网准备机下载后传输。
+**部署步骤**：见[部署文档](deployment.md)
+
+### 两阶段脚本
+
+| 脚本 | 执行位置 | 作用 |
+|------|---------|------|
+| `deploy/prepare_offline.sh` | 联网准备机 | 一键下载上述三样介质到 `deploy/offline/` |
+| `deploy/install_offline.sh` | 断网客户机 | 一键安装 Ollama + 导入模型 + 装 Python 依赖 |
+
+### 关键决策
+
+| 决策 | 理由 |
+|------|------|
+| Ollama 用 `.tar.zst` 压缩包而非裸二进制 | 压缩包含 `lib/ollama/` 运行时库，裸二进制缺 `llama-quantize` 会导致 `ollama create` 失败 |
+| Python wheel 用 Docker 容器下载 | Windows 直接 `pip download` 得到 `win_amd64` wheel 装不进 Linux；Docker 容器确保 Linux 平台匹配 |
+| 模型用 GGUF + `ollama create` 离线导入 | 符合断网假设，不依赖 `ollama pull` 联网 |
+| Ollama 绑定 `127.0.0.1` | 防止局域网内其他机器误调用推理服务 |
+| install 脚本自动创建 venv | 避免依赖污染系统 Python，符合工程规范 |
+| 解压需 `zstd` 工具 | 客户机需预装 `zstd`（`apt-get install zstd`），脚本会检测并提示 |
+
 ## 10. 验收对照
 
 | REQ-A-01 验收标准 | 本设计对应 |
 |------------------|-----------|
-| 无公网出站环境能完成部署并启动推理服务 | 配置默认连本地 Ollama，零硬编码外网地址（红线 1） |
-| 部署完成后执行一次健康检查，返回就绪状态 | `HealthChecker.check()` 三步检查 |
-| 部署不需要编辑配置文件；重启无需重新导入模型 | `config.yaml` 含合理默认值，Ollama 模型持久化 |
-| 文档明确描述模型文件离线导入流程 | 见后续部署文档（本步范围外，将独立文档化） |
+| 无公网出站环境能完成部署并启动推理服务 | 配置默认连本地 Ollama，零硬编码外网地址（红线 1）；`prepare_offline.sh` + `install_offline.sh` 全程离线 |
+| 部署完成后执行一次健康检查，返回就绪状态 | `HealthChecker.check()` 三步检查（服务可达→模型存在→推理可用） |
+| 部署不需要编辑配置文件；重启无需重新导入模型 | `config.yaml` 含合理默认值，Ollama 模型持久化存储，systemd 开机自启 |
+| 文档明确描述模型文件离线导入流程 | `docs/deployment.md` + `deploy/Modelfile`，GGUF + `ollama create` 流程 |
 | 文档明确列出最低硬件配置 | `HardwareRequirement` 默认值即最低配置 |
 | 启动前检测硬件，不满足拒绝启动 | `HardwarePrechecker` + `sys.exit(1)` |
+| 断网后预检能正确判断资源 | `precheck/hardware.py` 只读本地 `/proc`、`shutil`、`nvidia-smi`，不依赖网络 |
+| curl 推理接口返回正常响应 | Ollama `/v1/chat/completions` 兼容 OpenAI API |
+| Ollama 绑定 127.0.0.1 | systemd 配置 `OLLAMA_HOST=127.0.0.1:11434` |
 
 | 技术约束 8.1 | 本设计对应 |
 |------------|-----------|
