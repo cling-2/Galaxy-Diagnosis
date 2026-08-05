@@ -43,20 +43,45 @@ echo ""
 
 # ---------- 1. 安装 Ollama ----------
 echo "==> [1/3] 安装 Ollama..."
-OLLAMA_BIN="$OFFLINE_DIR/ollama"
-
-if [ ! -f "$OLLAMA_BIN" ]; then
-    fail "Ollama 二进制不存在: $OLLAMA_BIN"
-    echo "💡 请先在有网机器上执行 prepare_offline.sh 下载"
-    exit 1
-fi
 
 # 检查是否已安装
 if command -v ollama &>/dev/null; then
     ok "Ollama 已安装: $(ollama --version 2>&1 | head -1)"
 else
-    echo "    安装到 /usr/local/bin/ollama"
-    install -m 0755 "$OLLAMA_BIN" /usr/local/bin/ollama
+    # 查找 Ollama 安装包：支持裸二进制或 .tar.zst 压缩包
+    OLLAMA_BIN="$OFFLINE_DIR/ollama"
+    OLLAMA_TARZST=$(ls "$OFFLINE_DIR"/ollama-linux-amd64*.tar.zst 2>/dev/null | head -1)
+
+    if [ -f "$OLLAMA_BIN" ]; then
+        # 裸二进制方式
+        echo "    从裸二进制安装..."
+        install -m 0755 "$OLLAMA_BIN" /usr/local/bin/ollama
+    elif [ -n "$OLLAMA_TARZST" ]; then
+        # .tar.zst 压缩包方式（GitHub Releases 官方格式）
+        echo "    从 $OLLAMA_TARZST 解压安装..."
+        # 检查 zstd 是否可用
+        if ! command -v zstd &>/dev/null; then
+            fail "zstd 未安装，无法解压 .tar.zst"
+            echo "💡 安装 zstd: apt-get install zstd（离线环境需提前准备）"
+            exit 1
+        fi
+        zstd -d "$OLLAMA_TARZST" -o /tmp/ollama.tar --force
+        tar xf /tmp/ollama.tar -C /tmp/
+        # 从解压目录找到 ollama 二进制
+        EXTRACTED_BIN=$(find /tmp -name "ollama" -type f -executable 2>/dev/null | head -1)
+        if [ -z "$EXTRACTED_BIN" ]; then
+            fail "解压后未找到 ollama 二进制"
+            rm -f /tmp/ollama.tar
+            exit 1
+        fi
+        install -m 0755 "$EXTRACTED_BIN" /usr/local/bin/ollama
+        rm -f /tmp/ollama.tar
+        rm -rf /tmp/ollama* 2>/dev/null || true
+    else
+        fail "未找到 Ollama 安装包（裸二进制或 .tar.zst）"
+        echo "💡 请先在有网机器上执行 prepare_offline.sh 下载"
+        exit 1
+    fi
 
     # 创建 ollama 用户和 systemd 服务
     if ! id ollama &>/dev/null; then

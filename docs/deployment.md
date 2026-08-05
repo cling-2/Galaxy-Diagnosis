@@ -14,116 +14,86 @@
 | 网络 | 无公网出站要求；内网可用 |
 | Python | 3.10 及以上 |
 
-## 部署介质准备（在有网机器上操作）
+## 部署介质准备（在联网准备机上操作）
 
-在可访问互联网的机器上，准备以下文件，打包后通过 U 盘 / 移动硬盘 / 内网文件服务器传输到客户机。
+**核心原则**：下载机和安装机是两台不同的机器。断网客户机假设完全无网络，所有介质必须在联网准备机上下载好，再通过 U 盘 / 移动硬盘 / 内网文件服务器 / scp 传输到客户机。
 
-### 1. 项目代码
+准备机可以是 Windows / Linux / Mac，但需安装：
+- `curl`（下载 Ollama 二进制和 GGUF）
+- `docker`（下载 Linux 版 Python wheel，保证平台匹配）
+
+> ⚠ **平台陷阱**：在 Windows 上直接 `pip download` 会得到 `win_amd64` wheel，装不进 Linux。
+> 必须用 Docker 容器（Linux 镜像）下载 wheel。`prepare_offline.sh` 已自动处理。
+
+### 一键下载全部介质
 
 ```bash
-# 打包项目目录（不含 __pycache__ 和虚拟环境）
-tar czf galaxy-diag.tar.gz --exclude='__pycache__' --exclude='venv' galaxy-diag/
-```
-
-### 2. Python 依赖 wheel 文件
-
-```bash
-# 在有网机器上下载所有依赖为 wheel
 cd galaxy-diag
-bash deploy/download_wheels.sh
-# 产物：deploy/wheels/ 目录
+bash deploy/prepare_offline.sh
 ```
 
-### 3. Ollama 安装包
+脚本会下载三样介质到 `deploy/offline/`：
+
+| 介质 | 大小（约） | 下载方式 |
+|------|-----------|---------|
+| `ollama-linux-amd64.tar.zst` | ~1.3 GB | curl 从 GitHub Releases 下载 |
+| `Qwen3-8B-Q4_K_M.gguf` | ~4.7 GB | curl 从 ModelScope 下载 |
+| `wheels/` | ~50 MB | Docker 容器内 `pip download`，Linux wheel |
+| **总计** | **~6.1 GB** | |
+
+**下载源可通过环境变量覆盖**（默认源不可达时使用）：
 
 ```bash
-# 下载 Ollama Linux 安装脚本
-curl -fsSL https://ollama.com/install.sh -o ollama_install.sh
-# 或下载 Ollama 二进制
-curl -fsSL https://ollama.com/download/ollama-linux-amd64 -o ollama
+# 例：改用 HuggingFace 下载模型
+MODEL_GGUF_URL="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/qwen3-8b-q4_k_m.gguf" \
+  bash deploy/prepare_offline.sh
 ```
 
-### 4. 模型文件（GGUF）
+### 传输到客户机
+
+将整个 `galaxy-diag` 目录（含 `deploy/offline/`）传输到断网客户机：
 
 ```bash
-# 方式一：从 HuggingFace / ModelScope 下载 Qwen3-8B Q4_K_M 量化版
-# HuggingFace: https://huggingface.co/Qwen/Qwen3-8B-GGUF
-# ModelScope:  https://modelscope.cn/models/Qwen/Qwen3-8B-GGUF
-# 下载文件: qwen3-8b-q4_k_m.gguf（约 4.9 GB）
+# 方式一：scp（若有内网 SSH 通道）
+scp -r galaxy-diag/ user@客户机:/home/user/galaxy-diag
 
-# 方式二：从已安装 Ollama 的机器上导出
-# 联网机器上先拉取：
-ollama pull qwen3:8b
-# 导出模型 blob（需要找到对应的 sha256 文件）：
-ollama show qwen3:8b --modelfile
+# 方式二：打包后用 U 盘 / 移动硬盘
+tar czf galaxy-diag.tar.gz --exclude='__pycache__' --exclude='venv' galaxy-diag/
+# 拷贝到 U 盘，在客户机解压：tar xzf galaxy-diag.tar.gz
 ```
-
-### 5. 传输介质汇总
-
-| 文件/目录 | 大小（约） | 用途 |
-|-----------|-----------|------|
-| galaxy-diag.tar.gz | < 1 MB | 项目代码 |
-| deploy/wheels/ | ~50 MB | Python 依赖 |
-| ollama_install.sh 或 ollama 二进制 | ~800 MB | Ollama 运行时 |
-| qwen3-8b-q4_k_m.gguf | ~4.9 GB | 模型文件 |
-| deploy/Modelfile | < 1 KB | Ollama 模型定义 |
-| **总计** | **~5.8 GB** | |
 
 ## 客户机部署步骤（在断网机器上操作）
 
-### Step 1：解压项目代码
+假设客户机完全无网络，所有介质已通过 U 盘 / 内网传输到位。
+
+### Step 1：传输项目到客户机
 
 ```bash
+# 如果是 scp 传输
+cd ~/galaxy-diag   # 项目已就位
+
+# 如果是 U 盘 / 移动硬盘
 tar xzf galaxy-diag.tar.gz
 cd galaxy-diag
 ```
 
-### Step 2：安装 Ollama
+### Step 2：一键离线安装
 
 ```bash
-# 方式一：使用安装脚本（需要 bash 和 curl）
-bash ollama_install.sh
-
-# 方式二：手动安装二进制
-sudo cp ollama /usr/local/bin/
-sudo useradd -r -s /bin/false ollama
-sudo systemctl enable ollama    # 需要自行创建 systemd unit 文件
-
-# 启动 Ollama 服务
-ollama serve &
-# 或通过 systemd
-sudo systemctl start ollama
-```
-
-### Step 3：导入模型
-
-```bash
-# 确保 GGUF 文件和 Modelfile 在同一目录
-# GGUF 文件路径需与 Modelfile 中 FROM 指令一致
-ollama create qwen3:8b -f deploy/Modelfile
-
-# 验证模型已导入
-ollama list
-# 应显示：qwen3:8b
-```
-
-### Step 4：安装 Python 依赖（离线）
-
-```bash
-cd galaxy-diag
-
 # 建议使用虚拟环境
 python3 -m venv venv
 source venv/bin/activate
 
-# 从本地 wheel 离线安装
+# 一键安装 Ollama + 导入模型 + Python 依赖
 bash deploy/install_offline.sh
-
-# 验证安装
-python3 -c "import openai, httpx, yaml, rich; print('依赖安装成功')"
 ```
 
-### Step 5：启动系统
+`install_offline.sh` 会自动完成三件事：
+1. 安装 Ollama 二进制到 `/usr/local/bin/`，创建 systemd 服务并启动
+2. 从 `deploy/offline/*.gguf` 通过 `ollama create` 离线导入模型
+3. 从 `deploy/offline/wheels/` 离线安装 Python 依赖
+
+### Step 3：启动系统
 
 ```bash
 python3 main.py
@@ -157,7 +127,7 @@ Galaxy-Diag — 银河平台部署问题定位工具
 ✅ 系统就绪  模型: qwen3:8b  |  服务: http://localhost:11434/v1
 ```
 
-### Step 6：重启验证
+### Step 4：重启验证
 
 ```bash
 # 重启系统后确认无需重新导入模型
@@ -180,38 +150,35 @@ python3 main.py
 ### 1. 准备新模型
 
 ```bash
-# 在有网机器上下载新模型的 GGUF 文件
-# 如：qwen3-8b-q8_0.gguf（更高质量但更大）
+# 在联网准备机上下载新模型的 GGUF 文件
+# 修改 prepare_offline.sh 的环境变量，或直接 curl 下载：
+# MODEL_GGUF_URL="https://modelscope.cn/.../qwen3-8b-q8_0.gguf" \
+# MODEL_GGUF_NAME="qwen3-8b-q8_0.gguf" \
+#   bash deploy/prepare_offline.sh
 ```
 
 ### 2. 传输到客户机
 
 ```bash
-# 同初始部署方式：U 盘 / 内网传输
-scp qwen3-8b-q8_0.gguf user@客户机:/tmp/
+# 同初始部署方式：U 盘 / 内网传输 / scp
+scp deploy/offline/qwen3-8b-q8_0.gguf user@客户机:~/galaxy-diag/deploy/offline/
 ```
 
-### 3. 更新 Modelfile
+### 3. 重建模型
 
 ```bash
-# 编辑 deploy/Modelfile，修改 FROM 路径
-# FROM ./qwen3-8b-q4_k_m.gguf  →  FROM ./qwen3-8b-q8_0.gguf
-```
+# 在客户机上，从新的 GGUF 离线导入
+ollama rm qwen3:8b   # 删除旧模型（可选，ollama create 会覆盖同名模型）
 
-### 4. 重建模型
-
-```bash
-# 删除旧模型（可选，不删也不会冲突，ollama create 会覆盖同名模型）
-ollama rm qwen3:8b
-
-# 创建新模型
-ollama create qwen3:8b -f deploy/Modelfile
+# 动态生成 Modelfile 并导入
+echo "FROM /root/galaxy-diag/deploy/offline/qwen3-8b-q8_0.gguf" | \
+  ollama create qwen3:8b -f -
 
 # 验证
 ollama list
 ```
 
-### 5. 更新配置（如模型名变化）
+### 4. 更新配置（如模型名变化）
 
 ```bash
 # 如果新模型名称不同，修改 config.yaml
