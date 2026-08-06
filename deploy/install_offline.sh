@@ -216,12 +216,18 @@ python3 -m pip install \
     --find-links="$WHEELS_DIR" \
     -r "$REQ_FILE"
 
-# 安装项目本身（src layout），注册 galaxy-diag 命令
-python3 -m pip install \
-    --no-index \
-    --find-links="$WHEELS_DIR" \
-    --no-deps \
-    -e "$PROJECT_DIR"
+# 生成 galaxy-diag 启动脚本（不依赖 pip 构建，直接用 PYTHONPATH 跑模块）
+# 注：src layout + pip install -e . 需要 setuptools 构建依赖，离线 wheels 不含，
+# 故改用启动器方式：设 PYTHONPATH=src 后执行 python -m galaxy_diag。
+LAUNCHER="$VENV_DIR/bin/galaxy-diag"
+cat > "$LAUNCHER" <<EOF
+#!/usr/bin/env bash
+# Galaxy-Diag 启动器（离线部署生成）
+export PYTHONPATH="\${PYTHONPATH:+\$PYTHONPATH:}$PROJECT_DIR/src"
+exec "$VENV_DIR/bin/python" -m galaxy_diag "\$@"
+EOF
+chmod +x "$LAUNCHER"
+ok "启动器已安装: $LAUNCHER"
 
 ok "Python 依赖安装完成"
 

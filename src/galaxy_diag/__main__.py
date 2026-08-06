@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -19,15 +21,20 @@ from galaxy_diag.model.precheck import HardwarePrechecker
 
 console = Console()
 
+# 项目根目录（src/galaxy_diag/__main__.py → 上两级为项目根，含 config.yaml）
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_CONFIG = _PROJECT_ROOT / "config.yaml"
+
 
 def main():
     """CLI 入口"""
     console.print("[bold cyan]Galaxy-Diag[/bold cyan] — 银河平台部署问题定位工具\n")
 
-    # 1. 加载配置
+    # 1. 加载配置（优先项目根目录的 config.yaml，可用 GALAXY_CONFIG 覆盖）
     console.print("[bold]📂 加载配置...[/bold]")
+    config_path = os.environ.get("GALAXY_CONFIG", str(_DEFAULT_CONFIG))
     try:
-        config = load_config("config.yaml")
+        config = load_config(config_path)
     except ConfigError as e:
         console.print(f"[red]✗ 配置加载失败[/red]")
         console.print(f"  {e}")
