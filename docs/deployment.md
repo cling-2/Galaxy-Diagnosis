@@ -14,6 +14,18 @@
 | 网络 | 无公网出站要求；内网可用 |
 | Python | 3.10 及以上 |
 
+### 客户机需预装的系统依赖
+
+`install_offline.sh` 依赖以下系统级包，断网环境无法 `apt-get install`，必须**提前预装**或从内网镜像源安装：
+
+| 包 | 用途 | 安装命令（联网时） |
+|----|------|------------------|
+| `python3` (≥3.10) | 运行工具 | `apt-get install python3` |
+| `python3-venv` | 创建虚拟环境 | `apt-get install python3-venv` |
+| `zstd` | 解压 Ollama `.tar.zst` | `apt-get install zstd` |
+
+> 若客户机无这些包，可在联网准备机上 `apt-get download` 下载 deb 包，一并随介质传输后 `dpkg -i` 安装。
+
 ## 部署介质准备（在联网准备机上操作）
 
 **核心原则**：下载机和安装机是两台不同的机器。断网客户机假设完全无网络，所有介质必须在联网准备机上下载好，再通过 U 盘 / 移动硬盘 / 内网文件服务器 / scp 传输到客户机。

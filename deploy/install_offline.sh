@@ -118,15 +118,16 @@ else
         exit 1
     fi
 
-    # 创建 ollama 用户和 systemd 服务
-    if ! id ollama &>/dev/null; then
-        useradd -r -s /bin/false -d /var/lib/ollama ollama
+    # 创建 ollama 用户（如果不存在且为 root）
+    if ! id ollama &>/dev/null && [ "$(id -u)" -eq 0 ]; then
+        useradd -r -s /bin/false -d /var/lib/ollama ollama 2>/dev/null || true
     fi
     mkdir -p /var/lib/ollama
-    chown -R ollama:ollama /var/lib/ollama
 
-    # 写入 systemd unit
-    cat > /etc/systemd/system/ollama.service <<'EOF'
+    # 启动 Ollama：优先 systemd，降级为后台进程（如 Docker 容器无 systemd）
+    if command -v systemctl &>/dev/null && systemctl --quiet is-system-running 2>/dev/null; then
+        # systemd 可用：创建服务单元
+        cat > /etc/systemd/system/ollama.service <<SVCEOF
 [Unit]
 Description=Ollama Service
 After=network-online.target
@@ -141,18 +142,30 @@ RestartSec=3
 
 [Install]
 WantedBy=default.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable ollama
-    systemctl start ollama
-    sleep 2
-
-    if systemctl is-active --quiet ollama; then
-        ok "Ollama 服务已启动"
+SVCEOF
+        chown -R ollama:ollama /var/lib/ollama
+        systemctl daemon-reload
+        systemctl enable ollama
+        systemctl start ollama
+        sleep 2
+        if systemctl is-active --quiet ollama; then
+            ok "Ollama 服务已启动 (systemd)"
+        else
+            fail "Ollama 服务启动失败，请检查: systemctl status ollama"
+            exit 1
+        fi
     else
-        fail "Ollama 服务启动失败，请检查: systemctl status ollama"
-        exit 1
+        # 无 systemd（如 Docker 容器）：后台启动
+        echo "    无 systemd，以后台进程方式启动 Ollama..."
+        OLLAMA_HOST=127.0.0.1:11434 /usr/local/bin/ollama serve &
+        OLLAMA_PID=$!
+        sleep 2
+        if kill -0 "$OLLAMA_PID" 2>/dev/null; then
+            ok "Ollama 已启动 (PID=$OLLAMA_PID, 非 systemd 模式)"
+        else
+            fail "Ollama 后台启动失败"
+            exit 1
+        fi
     fi
 fi
 
