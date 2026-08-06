@@ -1,8 +1,11 @@
-"""统一错误类定义
+"""统一异常体系
 
 所有业务错误继承 GalaxyDiagError，附带可操作 hint，
 对齐任务书"错误处理不能吞"原则。
+对应架构设计 shared 层。
 """
+
+from __future__ import annotations
 
 
 class GalaxyDiagError(Exception):
@@ -33,3 +36,23 @@ class ModelUnavailableError(GalaxyDiagError):
 
 class ModelCallError(GalaxyDiagError):
     """模型调用失败（超时 / 限频 / 响应异常）"""
+
+
+class CollectorError(GalaxyDiagError):
+    """信息采集失败"""
+
+
+class DiagnoseError(GalaxyDiagError):
+    """诊断分析失败"""
+
+
+class FixerError(GalaxyDiagError):
+    """修复生成失败"""
+
+
+class SafetyError(GalaxyDiagError):
+    """安全审核失败（危险操作拦截等）"""
+
+
+class WorkflowError(GalaxyDiagError):
+    """工作流编排异常"""

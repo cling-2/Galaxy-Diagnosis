@@ -16,8 +16,16 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.optional-dependencies]
+completion = ["argcomplete>=3.0.0"]
+dev = ["pytest>=7.0", "pytest-mock>=3.0"]
+
 [project.scripts]
-galaxy-diag = "galaxy_diag.__main__:main"
+galaxy-diag = "galaxy_diag.workflow.cli.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
