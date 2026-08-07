@@ -123,21 +123,21 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
 
     # 磁盘
     if hw.disks:
-        disk_strs = [f"{d.get('model', d.get('type', 'unknown'))} {d.get('capacity', '')}" for d in hw.disks]
+        disk_strs = [f"{d.model or d.type or 'unknown'} {d.capacity}" for d in hw.disks]
         table.add_row("磁盘", "\n".join(disk_strs))
     else:
         table.add_row("磁盘", "未检测到")
 
     # RAID 卡
     if hw.raid_cards:
-        raid_strs = [f"{r.get('model', 'unknown')} (固件: {r.get('firmware_version', 'unknown')})" for r in hw.raid_cards]
+        raid_strs = [f"{r.model or 'unknown'} (固件: {r.firmware_version or 'unknown'})" for r in hw.raid_cards]
         table.add_row("RAID 卡", "\n".join(raid_strs))
     else:
         table.add_row("RAID 卡", "未检测到")
 
     # 网卡
     if hw.nics:
-        nic_strs = [f"{n.get('model', 'unknown')} ({n.get('driver', 'unknown')})" for n in hw.nics]
+        nic_strs = [f"{n.model or 'unknown'} ({n.driver or 'unknown'})" for n in hw.nics]
         table.add_row("网卡", "\n".join(nic_strs))
     else:
         table.add_row("网卡", "未检测到")
@@ -156,6 +156,12 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
             st_table.add_row(st.storage_type, st.mount_path, st.filesystem)
 
         console.print(st_table)
+
+    # 采集提示
+    if env_info.collection_warnings:
+        console.print("\n[warning]⚠ 采集提示[/warning]")
+        for w in env_info.collection_warnings:
+            console.print(f"  - {w}")
 
 
 def print_diagnosis(result: DiagnosisResult) -> None:

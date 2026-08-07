@@ -24,15 +24,40 @@ class EnvironmentType(str, Enum):
 
 
 @dataclass
+class DiskInfo:
+    """磁盘信息"""
+
+    type: str = ""       # SSD / HDD / NVMe
+    capacity: str = ""   # 如 "500GB"
+    model: str = ""      # 设备型号
+
+
+@dataclass
+class RaidCardInfo:
+    """RAID 卡信息"""
+
+    model: str = ""               # RAID 卡型号
+    firmware_version: str = ""    # 固件版本（REQ-B-02 明确要求）
+
+
+@dataclass
+class NicInfo:
+    """网卡信息"""
+
+    model: str = ""    # 网卡型号
+    driver: str = ""   # 驱动模块
+
+
+@dataclass
 class HardwareInfo:
     """硬件基本信息"""
 
     cpu_model: str = ""
     cpu_cores: int = 0
     memory_total_gb: float = 0.0
-    disks: list[dict] = field(default_factory=list)      # [{type, capacity, model}]
-    raid_cards: list[dict] = field(default_factory=list)  # [{model, firmware_version}]
-    nics: list[dict] = field(default_factory=list)        # [{model, driver}]
+    disks: list[DiskInfo] = field(default_factory=list)
+    raid_cards: list[RaidCardInfo] = field(default_factory=list)
+    nics: list[NicInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +77,7 @@ class EnvInfo:
     env_type: EnvironmentType = EnvironmentType.BARE_METAL
     hardware: HardwareInfo = field(default_factory=HardwareInfo)
     storage: list[StorageInfo] = field(default_factory=list)
+    collection_warnings: list[str] = field(default_factory=list)  # 采集受限/降级提示
     raw_output: dict = field(default_factory=dict)  # 原始采集数据（供 LLM 上下文）
 
 

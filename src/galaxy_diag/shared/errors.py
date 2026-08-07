@@ -42,6 +42,18 @@ class CollectorError(GalaxyDiagError):
     """信息采集失败"""
 
 
+class CollectorPermissionError(CollectorError):
+    """采集权限不足（如非 root 读 DMI）"""
+
+
+class CollectorPartialError(CollectorError):
+    """部分采集失败"""
+
+
+class CollectorToolNotFoundError(CollectorError):
+    """采集工具未安装（如 storcli64/lspci 缺失）"""
+
+
 class DiagnoseError(GalaxyDiagError):
     """诊断分析失败"""
 

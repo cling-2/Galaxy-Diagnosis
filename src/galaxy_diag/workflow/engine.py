@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Protocol
 
+from galaxy_diag.collector import collect_env
 from galaxy_diag.shared.errors import (
     GalaxyDiagError,
     ModelUnavailableError,
@@ -273,19 +274,17 @@ class WorkflowEngine:
         """ENV_RECOGNISING: 环境感知
 
         调用 collector 模块识别环境类型、采集软硬件信息。
-        当前为 stub：返回 mock 数据。
         """
-        display.print_stub_notice("REQ-B", "环境识别与硬件采集")
-        env_info = self._stub_collect_env()
+        env_info = collect_env()
 
         self.state.env_info = env_info
         display.print_env_info(env_info)
 
-        # 逐步模式：ENV_RECOGNISING 后允许用户查看采集结果
-        if not self.auto:
-            if not interact.confirm("环境识别完成，是否继续?", default=True):
-                self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
-                return
+        # # 逐步模式：ENV_RECOGNISING 后允许用户查看采集结果
+        # if not self.auto:
+        #     if not interact.confirm("环境识别完成，是否继续?", default=True):
+        #         self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
+        #         return
 
         self._transition(WorkflowStep.COLLECTING)
 
@@ -603,33 +602,6 @@ class WorkflowEngine:
         display.print_fix_proposal(proposal)
 
     # ===== Stub 回调（mock 数据，业务模块实现后替换） =====
-
-    def _stub_collect_env(self) -> EnvInfo:
-        """Stub: 环境识别与硬件采集"""
-        return EnvInfo(
-            env_type=EnvironmentType.VM,
-            hardware=HardwareInfo(
-                cpu_model="Intel Xeon E5-2680 v4",
-                cpu_cores=4,
-                memory_total_gb=16.0,
-                disks=[
-                    {"type": "SSD", "capacity": "100GB", "model": "sda"},
-                    {"type": "HDD", "capacity": "500GB", "model": "sdb"},
-                ],
-                raid_cards=[],
-                nics=[
-                    {"model": "virtio-net", "driver": "virtio_pci"},
-                ],
-            ),
-            storage=[
-                StorageInfo(
-                    storage_type="NAS",
-                    mount_path="/mnt/data",
-                    filesystem="nfs4",
-                    details={"server": "nas-01.internal"},
-                ),
-            ],
-        )
 
     def _stub_diagnose(self) -> DiagnosisResult:
         """Stub: 诊断根因分析"""

@@ -233,7 +233,15 @@ def _parse_env_info(raw: dict | None) -> Any:
     """解析 EnvInfo（可能为 None）"""
     if raw is None:
         return None
-    from galaxy_diag.shared.types import EnvInfo, EnvironmentType, HardwareInfo, StorageInfo
+    from galaxy_diag.shared.types import (
+        DiskInfo,
+        EnvInfo,
+        EnvironmentType,
+        HardwareInfo,
+        NicInfo,
+        RaidCardInfo,
+        StorageInfo,
+    )
 
     # 解析 env_type 枚举
     env_type_str = raw.get("env_type", "bare_metal")
@@ -242,15 +250,18 @@ def _parse_env_info(raw: dict | None) -> Any:
     except ValueError:
         env_type = EnvironmentType.BARE_METAL
 
-    # 解析 hardware
+    # 解析 hardware（类型化 dataclass）
     hw_raw = raw.get("hardware", {})
     hardware = HardwareInfo(
         cpu_model=hw_raw.get("cpu_model", ""),
         cpu_cores=hw_raw.get("cpu_cores", 0),
         memory_total_gb=hw_raw.get("memory_total_gb", 0.0),
-        disks=hw_raw.get("disks", []),
-        raid_cards=hw_raw.get("raid_cards", []),
-        nics=hw_raw.get("nics", []),
+        disks=[DiskInfo(**{k: v for k, v in d.items() if k in ("type", "capacity", "model")})
+               for d in hw_raw.get("disks", [])],
+        raid_cards=[RaidCardInfo(**{k: v for k, v in r.items() if k in ("model", "firmware_version")})
+                    for r in hw_raw.get("raid_cards", [])],
+        nics=[NicInfo(**{k: v for k, v in n.items() if k in ("model", "driver")})
+              for n in hw_raw.get("nics", [])],
     )
 
     # 解析 storage 列表
@@ -267,6 +278,7 @@ def _parse_env_info(raw: dict | None) -> Any:
         env_type=env_type,
         hardware=hardware,
         storage=storage_list,
+        collection_warnings=raw.get("collection_warnings", []),
         raw_output=raw.get("raw_output", {}),
     )
 
