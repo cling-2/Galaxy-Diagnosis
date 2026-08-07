@@ -11,6 +11,10 @@ from galaxy_diag.shared.errors import (
     PrecheckError,
     ModelUnavailableError,
     ModelCallError,
+    CollectorError,
+    CollectorPermissionError,
+    CollectorPartialError,
+    CollectorToolNotFoundError,
 )
 
 
@@ -58,3 +62,29 @@ class TestErrorSubclasses:
         e1 = ConfigError("x")
         e2 = ModelCallError("x")
         assert type(e1) != type(e2)
+
+
+class TestCollectorErrorSubclasses:
+    def test_collector_permission_error(self):
+        e = CollectorPermissionError("无权限读 DMI", hint="请以 root 运行")
+        assert isinstance(e, CollectorError)
+        assert isinstance(e, GalaxyDiagError)
+        assert "无权限" in str(e)
+        assert "root" in str(e)
+
+    def test_collector_partial_error(self):
+        e = CollectorPartialError("RAID 采集失败")
+        assert isinstance(e, CollectorError)
+        assert isinstance(e, GalaxyDiagError)
+
+    def test_collector_tool_not_found_error(self):
+        e = CollectorToolNotFoundError("lspci 未安装", hint="apt install pciutils")
+        assert isinstance(e, CollectorError)
+        assert isinstance(e, GalaxyDiagError)
+
+    def test_collector_subclasses_distinct(self):
+        e1 = CollectorPermissionError("x")
+        e2 = CollectorToolNotFoundError("x")
+        e3 = CollectorPartialError("x")
+        types = {type(e1), type(e2), type(e3)}
+        assert len(types) == 3
