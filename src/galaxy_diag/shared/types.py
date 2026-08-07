@@ -136,25 +136,68 @@ class AuditRecord:
 
 
 class WorkflowStep(str, Enum):
-    """工作流步骤"""
+    """工作流步骤
 
-    COLLECT = "collect"
-    DIAGNOSE = "diagnose"
-    FIX = "fix"
-    REVIEW = "review"
-    EXECUTE = "execute"
-    VERIFY = "verify"
+    对应 workflow-design.md §2 完整状态机。
+    终态由 history 末条 result 判断，不设枚举值。
+    """
+
+    ENV_RECOGNISING = "env_recognising"      # 环境感知
+    COLLECTING = "collecting"                # 信息采集
+    DIAGNOSING = "diagnosing"                # 根因分析
+    PLANNING = "planning"                    # 修复建议生成
+    SECURITY_CHECKING = "security_checking"  # 安全检测
+    REVIEWING = "reviewing"                  # 人工审核
+    SNAPSHOT = "snapshot"                    # 创建恢复快照
+    EXECUTING = "executing"                  # 执行修复
+    VERIFYING = "verifying"                  # 结果验证
+
+    @property
+    def is_terminal(self) -> bool:
+        """是否为终态（DONE / REJECTED / ROLLBACK）
+
+        终态通过 history 末条记录判断，而非枚举值。
+        当 current_step 不在活跃步骤中且 history 标记完成时，视为终态。
+        """
+        return False  # 所有枚举值都是活跃步骤
+
+
+# 会话终态标签（不在 WorkflowStep 枚举中，由 history 判断）
+class SessionStatus(str, Enum):
+    """会话生命周期状态"""
+
+    ACTIVE = "active"        # 进行中（current_step 为活跃步骤）
+    DONE = "done"            # 已完成
+    REJECTED = "rejected"    # 已拒绝
+    ROLLED_BACK = "rolled_back"  # 已回滚
 
 
 @dataclass
 class WorkflowState:
-    """工作流持久化状态"""
+    """工作流持久化状态
+
+    对齐 workflow-design.md §3，此为唯一状态结构。
+    """
 
     session_id: str = ""
-    current_step: WorkflowStep = WorkflowStep.COLLECT
+    current_step: WorkflowStep = WorkflowStep.ENV_RECOGNISING
     problem_description: str = ""
     env_info: EnvInfo | None = None
     diagnosis: DiagnosisResult | None = None
     fix: FixProposal | None = None
     snapshot: SnapshotMeta | None = None
-    history: list[dict] = field(default_factory=list)  # 步骤历史（含时间戳和结果）
+    history: list[dict] = field(default_factory=list)  # 步骤历史（含时间戳、状态转换、结果）
+
+    @property
+    def session_status(self) -> SessionStatus:
+        """根据 history 判断会话生命周期状态"""
+        if self.history:
+            last = self.history[-1]
+            result = last.get("result", "")
+            if result == "done":
+                return SessionStatus.DONE
+            if result == "rejected":
+                return SessionStatus.REJECTED
+            if result == "rollback":
+                return SessionStatus.ROLLED_BACK
+        return SessionStatus.ACTIVE
