@@ -1,0 +1,7 @@
+# 开发/测试依赖（不参与离线生产部署）
+# 离线环境需跑测试时，单独下载：
+#   pip download -r requirements-dev.txt -d deploy/offline/wheels-dev
+# 并在 install_offline.sh 之外单独安装
+
+pytest>=8.0.0
+pytest-mock>=3.0
