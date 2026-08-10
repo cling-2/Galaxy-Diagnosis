@@ -23,6 +23,18 @@ class EnvironmentType(str, Enum):
     CONTAINER = "container"
 
 
+class ContainerRuntime(str, Enum):
+    """容器运行时子类型
+
+    仅当 env_type == CONTAINER 时有意义，区分 Docker / Kubernetes 采集策略。
+    对齐 Environment_awareness_design.md §容器运行时子类型识别。
+    """
+
+    DOCKER = "docker"          # 纯 Docker / Podman 容器
+    KUBERNETES = "kubernetes"  # Kubernetes Pod
+    UNKNOWN = "unknown"        # 识别为容器但运行时无法确定
+
+
 @dataclass
 class DiskInfo:
     """磁盘信息"""
@@ -75,6 +87,7 @@ class EnvInfo:
     """collector → diagnoser 的采集结果"""
 
     env_type: EnvironmentType = EnvironmentType.BARE_METAL
+    container_runtime: ContainerRuntime | None = None  # 容器运行时子类型（仅 CONTAINER 时有值）
     hardware: HardwareInfo = field(default_factory=HardwareInfo)
     storage: list[StorageInfo] = field(default_factory=list)
     collection_warnings: list[str] = field(default_factory=list)  # 采集受限/降级提示

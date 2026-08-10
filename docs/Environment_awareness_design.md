@@ -80,7 +80,7 @@
 |------|--------|------|-----------|
 | 裸金属 | `EnvironmentType.BARE_METAL` | 物理服务器 | 场景 1 |
 | 虚拟机 | `EnvironmentType.VM` | QEMU-KVM / VMware / Xen 等 | 场景 3 |
-| 容器 | `EnvironmentType.CONTAINER` | Docker / Kubernetes 容器 | 场景 2 |
+| 容器 | `EnvironmentType.CONTAINER` | Docker 或 Kubernetes 容器（子类型见 `ContainerRuntime`） | 场景 2 |
 
 枚举定义在 `shared/types.py`，识别结果中文标签由 `shared/constants.py` 的 `ENV_TYPE_LABELS` 提供。
 
@@ -126,6 +126,52 @@ CONTAINER > VM > BARE_METAL
 ```
 
 容器检测命中即终止，不再判断 VM。
+
+### 容器运行时子类型识别（Docker / Kubernetes）
+
+任务书"容器"涵盖 **Docker** 与 **Kubernetes** 两种运行环境，二者采集策略差异显著（Docker 用 `docker ps/logs/network`，K8s 用 `kubectl get/logs` + CNI）。识别为 `CONTAINER` 后，进一步判定容器运行时子类型，存入 `EnvInfo.container_runtime`，供后续 COLLECTING 采集策略分支使用。
+
+#### 子类型枚举
+
+```python
+class ContainerRuntime(str, Enum):
+    """容器运行时子类型（仅当 env_type == CONTAINER 时有意义）"""
+    DOCKER = "docker"          # 纯 Docker / Podman 容器
+    KUBERNETES = "kubernetes"  # Kubernetes Pod
+    UNKNOWN = "unknown"        # 识别为容器但运行时无法确定
+```
+
+#### 识别信号（优先级 K8S > DOCKER）
+
+K8s 优先：K8s Pod 底层可能用 docker/containerd 运行时，若先判 Docker 会误判，丢失 K8s 语义（kubectl/CNI 采集路径）。
+
+| 子类型 | 检测信号 | 命令/文件 | 命中判定 |
+|--------|---------|----------|---------|
+| `KUBERNETES`（优先） | service account 挂载 | `/var/run/secrets/kubernetes.io/serviceaccount/token` 存在 | 文件存在 |
+| | K8s API 环境变量 | `KUBERNETES_SERVICE_HOST` 环境变量 | 存在且非空 |
+| | cgroup 含 kubepods | `/proc/1/cgroup` | 含 `kubepods` |
+| | kubelet 可达（弱信号） | `kubectl get pod` 可执行且连集群 | 命令成功（仅作辅助，不单独判定） |
+| `DOCKER` | dockerenv | `/.dockerenv` 存在且无 K8s 信号 | 文件存在 |
+| | cgroup 含 docker | `/proc/1/cgroup` 含 `docker` 且不含 `kubepods` | 命中 |
+| `UNKNOWN` | 识别为容器（overlay 根等）但上述均不命中 | — | 兜底 |
+
+#### 识别决策树
+
+```
+已判定 env_type == CONTAINER
+        │
+        ├─ /var/run/secrets/kubernetes.io/serviceaccount/token 存在?  ──→ KUBERNETES
+        ├─ KUBERNETES_SERVICE_HOST 环境变量存在?                       ──→ KUBERNETES
+        ├─ /proc/1/cgroup 含 kubepods?                                ──→ KUBERNETES
+        ├─ /.dockerenv 存在 或 cgroup 含 docker?                      ──→ DOCKER
+        └─ 均不命中                                                    ──→ UNKNOWN
+```
+
+> **UNKNOWN 的处理**：`container_runtime=UNKNOWN` 时，COLLECTING 采集策略尝试 Docker 与 K8s 两套命令（各自降级），并在 `collection_warnings` 提示"容器运行时未确定，已尝试双路采集"。
+
+#### 与嵌套优先级的关系
+
+容器子类型识别在 `ContainerDetector` 命中 `CONTAINER` **之后**进行，不影响 `CONTAINER > VM > BARE_METAL` 的环境类型优先级链。即：先确定"是容器"，再确定"是什么容器"。
 
 ### 降级方案
 
@@ -209,17 +255,39 @@ CONTAINER > VM > BARE_METAL
 
 ```python
 def collect_env() -> EnvInfo:
-    """环境感知顶层编排：识别环境类型 → 采集软硬件 → 组装 EnvInfo"""
-    env_type = EnvironmentDetector().detect()           # env_detect.py
-    hardware = HardwareCollector().collect(env_type)    # hardware.py
-    storage = StorageCollector().collect(env_type)      # storage.py
-    warnings = build_collection_warnings(env_type, hardware, storage)
+    """环境感知顶层编排：识别环境类型 → 识别容器子类型 → 采集软硬件 → 组装 EnvInfo"""
+    warnings: list[str] = []
+
+    # 1. 环境类型识别
+    env_type = EnvironmentDetector().detect(warnings)
+
+    # 2. 容器运行时子类型识别（仅 CONTAINER 时）
+    container_runtime = None
+    if env_type == EnvironmentType.CONTAINER:
+        container_runtime = detect_container_runtime(warnings)
+
+    # 3. 硬件采集
+    hardware = HardwareCollector().collect(env_type, warnings)
+
+    # 4. 存储采集
+    storage = StorageCollector().collect(env_type, warnings)
+
+    # 5. 环境类型级别的采集提示
+    _append_env_type_warnings(env_type, container_runtime, warnings)
+
+    # 6. 汇总 raw_output（截断）
+    raw = {}
+    raw.update(hw_collector.raw_output)
+    raw.update(st_collector.raw_output)
+    raw = _truncate_raw_output(raw)
+
     return EnvInfo(
         env_type=env_type,
+        container_runtime=container_runtime,
         hardware=hardware,
         storage=storage,
         collection_warnings=warnings,
-        raw_output={...},  # 各 Collector 原始输出汇总（供 LLM 上下文）
+        raw_output=raw,
     )
 ```
 
@@ -238,13 +306,14 @@ def collect_env() -> EnvInfo:
 @dataclass
 class EnvInfo:
     env_type: EnvironmentType             # B-01 识别结果
+    container_runtime: ContainerRuntime | None = None  # 容器运行时子类型（仅 CONTAINER 时有值）
     hardware: HardwareInfo                # 硬件采集结果
     storage: list[StorageInfo]            # 第三方存储列表
-    collection_warnings: list[str]        # 采集受限/降级提示（新增）
+    collection_warnings: list[str]        # 采集受限/降级提示
     raw_output: dict                      # 原始采集数据汇总（供 LLM 上下文）
 ```
 
-> **变更说明**：相对原 `types.py`，新增 `collection_warnings` 字段，承载容器/VM 环境采集受限的明确提示，对齐任务书 "容器环境采集容器可见信息并提示可能需要宿主机信息补充" 要求。
+> **变更说明**：相对原 `types.py`，新增 `collection_warnings` 字段（B-02 降级提示）与 `container_runtime` 字段（容器子类型识别）。`container_runtime` 仅当 `env_type == CONTAINER` 时有值，其余环境为 `None`。
 
 ### HardwareInfo
 

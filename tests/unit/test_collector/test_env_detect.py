@@ -2,6 +2,7 @@
 
 覆盖 ContainerDetector / VMDetector / BareMetalDetector /
 EnvironmentDetector 优先级链与降级逻辑。
+容器运行时子类型识别（detect_container_runtime）覆盖 K8S > DOCKER > UNKNOWN。
 """
 
 from unittest.mock import patch
@@ -13,8 +14,9 @@ from galaxy_diag.collector.env_detect import (
     ContainerDetector,
     EnvironmentDetector,
     VMDetector,
+    detect_container_runtime,
 )
-from galaxy_diag.shared.types import EnvironmentType
+from galaxy_diag.shared.types import ContainerRuntime, EnvironmentType
 
 
 # ===== ContainerDetector =====
@@ -253,3 +255,96 @@ class TestDegradation:
             warnings = []
             result = detector.detect(warnings)
             assert result == EnvironmentType.BARE_METAL
+
+
+# ===== 容器运行时子类型识别 =====
+
+
+class TestContainerRuntime:
+    """容器运行时子类型识别（detect_container_runtime）
+
+    优先级：KUBERNETES > DOCKER > UNKNOWN
+    """
+
+    def test_k8s_service_account_token(self):
+        """信号 1: K8s service account 挂载 → KUBERNETES"""
+        with patch("galaxy_diag.collector.env_detect.os.path.exists") as mock_exists:
+            mock_exists.return_value = True  # /var/run/secrets/.../token 存在
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.KUBERNETES
+
+    def test_k8s_service_host_env(self):
+        """信号 2: KUBERNETES_SERVICE_HOST 环境变量 → KUBERNETES"""
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", return_value=False), \
+             patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "10.96.0.1"}, clear=False):
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.KUBERNETES
+
+    def test_k8s_cgroup_kubepods(self):
+        """信号 3: /proc/1/cgroup 含 kubepods → KUBERNETES"""
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", return_value=False), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("galaxy_diag.collector.env_detect._read_file") as mock_read:
+            mock_read.return_value = "12:memory:/kubepods/besteffort/pod123\n"
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.KUBERNETES
+
+    def test_docker_dockerenv(self):
+        """信号 4: /.dockerenv 存在（无 K8s 信号）→ DOCKER"""
+        def fake_exists(path):
+            # serviceaccount/token 不存在，但 /.dockerenv 存在
+            return path == "/.dockerenv"
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", side_effect=fake_exists), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("galaxy_diag.collector.env_detect._read_file", return_value=None):
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.DOCKER
+
+    def test_docker_cgroup_docker(self):
+        """信号 5: /proc/1/cgroup 含 docker（无 K8s 信号、无 dockerenv）→ DOCKER"""
+        def fake_exists(path):
+            return False
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", side_effect=fake_exists), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("galaxy_diag.collector.env_detect._read_file") as mock_read:
+            mock_read.return_value = "12:memory:/docker/abc123\n"
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.DOCKER
+
+    def test_unknown_fallback(self):
+        """所有信号均不命中 → UNKNOWN，并记录 warning"""
+        def fake_exists(path):
+            return False
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", side_effect=fake_exists), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("galaxy_diag.collector.env_detect._read_file") as mock_read:
+            # cgroup 为空根（cgroup v2: "0::/"）或 user.slice，不含容器关键词
+            mock_read.return_value = "0::/\n"
+            warnings = []
+            result = detect_container_runtime(warnings)
+        assert result == ContainerRuntime.UNKNOWN
+        assert any("运行时" in w for w in warnings)
+
+    def test_k8s_wins_over_docker(self):
+        """K8s 信号 + Docker 信号同时存在 → KUBERNETES 优先
+
+        场景：K8s Pod 底层用 docker runtime，cgroup 同时含 docker 和 kubepods，
+        且 /.dockerenv 可能存在。应判为 KUBERNETES。
+        """
+        def fake_exists(path):
+            # serviceaccount/token 存在，dockerenv 也存在
+            return path in (
+                "/var/run/secrets/kubernetes.io/serviceaccount/token",
+                "/.dockerenv",
+            )
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", side_effect=fake_exists):
+            result = detect_container_runtime(warnings=[])
+        assert result == ContainerRuntime.KUBERNETES
+
+    def test_warnings_none_autocreate(self):
+        """warnings 为 None 时不报错"""
+        with patch("galaxy_diag.collector.env_detect.os.path.exists", return_value=False), \
+             patch.dict("os.environ", {}, clear=True), \
+             patch("galaxy_diag.collector.env_detect._read_file", return_value=None):
+            result = detect_container_runtime(warnings=None)
+        assert result == ContainerRuntime.UNKNOWN

@@ -9,6 +9,7 @@ import pytest
 
 from galaxy_diag.collector import collect_env
 from galaxy_diag.shared.types import (
+    ContainerRuntime,
     DiskInfo,
     EnvInfo,
     EnvironmentType,
@@ -47,6 +48,7 @@ class TestCollectEnv:
 
         assert isinstance(env_info, EnvInfo)
         assert env_info.env_type == EnvironmentType.BARE_METAL
+        assert env_info.container_runtime is None  # 非容器环境无运行时子类型
         assert env_info.hardware.cpu_model == "Intel Xeon"
         assert len(env_info.storage) == 1
         assert env_info.raw_output  # 非空
@@ -56,9 +58,11 @@ class TestCollectEnv:
     def test_container_adds_host_hint(self):
         """容器环境追加宿主机提示"""
         with patch("galaxy_diag.collector.EnvironmentDetector") as MockDetector, \
+             patch("galaxy_diag.collector.detect_container_runtime") as MockRuntime, \
              patch("galaxy_diag.collector.HardwareCollector") as MockHW, \
              patch("galaxy_diag.collector.StorageCollector") as MockST:
             MockDetector.return_value.detect.return_value = EnvironmentType.CONTAINER
+            MockRuntime.return_value = ContainerRuntime.DOCKER
             MockHW.return_value.collect.return_value = HardwareInfo()
             MockHW.return_value.raw_output = {}
             MockST.return_value.collect.return_value = []
@@ -66,7 +70,9 @@ class TestCollectEnv:
 
             env_info = collect_env()
 
+        assert env_info.container_runtime == ContainerRuntime.DOCKER
         assert any("宿主机" in w for w in env_info.collection_warnings)
+        assert any("Docker" in w for w in env_info.collection_warnings)
 
     def test_raw_output_truncation(self):
         """raw_output 长条目截断"""

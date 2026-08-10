@@ -12,7 +12,7 @@ import os
 import subprocess
 from typing import Protocol
 
-from galaxy_diag.shared.types import EnvironmentType
+from galaxy_diag.shared.types import ContainerRuntime, EnvironmentType
 
 
 # ===== 模块级工具函数（便于按模块路径 patch 测试） =====
@@ -200,3 +200,62 @@ class EnvironmentDetector:
         # 理论上不会到达（BareMetalDetector 总返回非 None），兜底
         warnings.append("所有环境检测信号均未命中，默认为裸金属")
         return EnvironmentType.BARE_METAL
+
+
+# ===== 容器运行时子类型识别 =====
+
+
+def detect_container_runtime(warnings: list[str] | None = None) -> ContainerRuntime:
+    """识别容器运行时子类型（Docker / Kubernetes / Unknown）
+
+    仅当 env_type == CONTAINER 时调用。优先级 K8S > DOCKER：
+    K8s Pod 底层可能用 docker/containerd 运行时，若先判 Docker 会误判。
+
+    信号：
+    1. /var/run/secrets/kubernetes.io/serviceaccount/token 存在 → KUBERNETES
+    2. KUBERNETES_SERVICE_HOST 环境变量存在 → KUBERNETES
+    3. /proc/1/cgroup 含 kubepods → KUBERNETES
+    4. /.dockerenv 存在或 /proc/1/cgroup 含 docker → DOCKER
+    5. 兜底 → UNKNOWN
+
+    Args:
+        warnings: 采集警告列表（就地追加），为 None 时自动创建。
+
+    Returns:
+        ContainerRuntime 枚举值
+    """
+    if warnings is None:
+        warnings = []
+
+    # --- Kubernetes 信号（优先） ---
+
+    # 信号 1: K8s service account 挂载（Pod 内自动注入）
+    if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
+        return ContainerRuntime.KUBERNETES
+
+    # 信号 2: KUBERNETES_SERVICE_HOST 环境变量（K8s Downward API 注入）
+    k8s_host = os.environ.get("KUBERNETES_SERVICE_HOST", "").strip()
+    if k8s_host:
+        return ContainerRuntime.KUBERNETES
+
+    # 信号 3: /proc/1/cgroup 含 kubepods
+    cgroup = _read_file("/proc/1/cgroup")
+    if cgroup and "kubepods" in cgroup.lower():
+        return ContainerRuntime.KUBERNETES
+
+    # --- Docker 信号 ---
+
+    # 信号 4: /.dockerenv 存在
+    if os.path.exists("/.dockerenv"):
+        return ContainerRuntime.DOCKER
+
+    # 信号 5: /proc/1/cgroup 含 docker（不含 kubepods，否则已在上面命中）
+    if cgroup and "docker" in cgroup.lower():
+        return ContainerRuntime.DOCKER
+
+    # --- 兜底 ---
+    warnings.append(
+        "容器运行时子类型未确定（非 Docker 亦非 Kubernetes），"
+        "后续采集将尝试双路命令（Docker + K8s）"
+    )
+    return ContainerRuntime.UNKNOWN

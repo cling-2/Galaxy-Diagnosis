@@ -10,10 +10,10 @@ TODO: tools.py（LangChain @tool 封装）与 collect_network 待 diagnoser/ 模
 
 from __future__ import annotations
 
-from galaxy_diag.collector.env_detect import EnvironmentDetector
+from galaxy_diag.collector.env_detect import EnvironmentDetector, detect_container_runtime
 from galaxy_diag.collector.hardware import HardwareCollector
 from galaxy_diag.collector.storage import StorageCollector
-from galaxy_diag.shared.types import EnvInfo, EnvironmentType
+from galaxy_diag.shared.types import ContainerRuntime, EnvInfo, EnvironmentType
 
 __all__ = ["collect_env"]
 
@@ -32,21 +32,26 @@ def collect_env() -> EnvInfo:
     """
     warnings: list[str] = []
 
-    # 1. 环境识别
+    # 1. 环境类型识别
     env_type = EnvironmentDetector().detect(warnings)
 
-    # 2. 硬件采集
+    # 2. 容器运行时子类型识别（仅 CONTAINER 时）
+    container_runtime: ContainerRuntime | None = None
+    if env_type == EnvironmentType.CONTAINER:
+        container_runtime = detect_container_runtime(warnings)
+
+    # 3. 硬件采集
     hw_collector = HardwareCollector()
     hardware = hw_collector.collect(env_type, warnings)
 
-    # 3. 存储采集
+    # 4. 存储采集
     st_collector = StorageCollector()
     storage = st_collector.collect(env_type, warnings)
 
-    # 4. 环境类型级别的采集提示
-    _append_env_type_warnings(env_type, warnings)
+    # 5. 环境类型级别的采集提示
+    _append_env_type_warnings(env_type, container_runtime, warnings)
 
-    # 5. 汇总 raw_output（截断）
+    # 6. 汇总 raw_output（截断）
     raw = {}
     raw.update(hw_collector.raw_output)
     raw.update(st_collector.raw_output)
@@ -54,6 +59,7 @@ def collect_env() -> EnvInfo:
 
     return EnvInfo(
         env_type=env_type,
+        container_runtime=container_runtime,
         hardware=hardware,
         storage=storage,
         collection_warnings=warnings,
@@ -61,12 +67,22 @@ def collect_env() -> EnvInfo:
     )
 
 
-def _append_env_type_warnings(env_type: EnvironmentType, warnings: list[str]) -> None:
+def _append_env_type_warnings(
+    env_type: EnvironmentType,
+    container_runtime: ContainerRuntime | None,
+    warnings: list[str],
+) -> None:
     """根据环境类型追加采集受限提示"""
     if env_type == EnvironmentType.CONTAINER:
+        runtime_label = {
+            ContainerRuntime.DOCKER: "Docker",
+            ContainerRuntime.KUBERNETES: "Kubernetes",
+            ContainerRuntime.UNKNOWN: "未知",
+            None: "未知",
+        }[container_runtime]
         warnings.append(
-            "容器环境无法直接采集宿主机硬件信息（CPU/RAID/物理网卡），"
-            "建议在宿主机上执行 galaxy-diag env 补充"
+            f"容器环境（运行时: {runtime_label}）无法直接采集宿主机硬件信息"
+            f"（CPU/RAID/物理网卡），建议在宿主机上执行 galaxy-diag env 补充"
         )
     elif env_type == EnvironmentType.VM:
         # VM 下 RAID 卡可能透传不可见，但这是一个"可能"而非"确定"，
