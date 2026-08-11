@@ -94,6 +94,37 @@ class EnvInfo:
     raw_output: dict = field(default_factory=dict)  # 原始采集数据（供 LLM 上下文）
 
 
+# ===== 诊断信息采集 =====
+
+
+@dataclass
+class LogSnippet:
+    """日志片段"""
+
+    source: str = ""           # 来源（如 "kubelet" / "/var/log/dmesg" / "user_upload"）
+    level: str = ""            # 级别（ERROR/Warning/Info）
+    timestamp: str = ""        # 时间窗标注
+    content: str = ""          # 预处理后的日志内容
+    truncated: bool = False    # 是否已截断
+
+
+@dataclass
+class DiagnosticContext:
+    """COLLECTING → DIAGNOSING 的结构化诊断上下文"""
+
+    problem_description: str = ""                  # 用户问题描述（含补充）
+    env_info_ref: EnvironmentType = EnvironmentType.BARE_METAL  # 引用环境类型（env_info 本身在 state 中）
+    container_runtime: ContainerRuntime | None = None  # 容器运行时子类型（仅 CONTAINER 时有值）
+    component_status: list[dict] = field(default_factory=list)  # 组件部署状态 [{name, status, detail}]
+    log_snippets: list[LogSnippet] = field(default_factory=list)  # 日志片段
+    system_resources: dict = field(default_factory=dict)  # CPU/MEM/磁盘/负载
+    network_checks: list[dict] = field(default_factory=list)  # 连通性检测结果 [{target, reachable, detail}]
+    user_provided: list[str] = field(default_factory=list)  # 被动接收的用户日志/描述
+    collection_warnings: list[str] = field(default_factory=list)  # 采集降级提示
+    raw_output: dict = field(default_factory=dict)  # 预处理后摘要（供 LLM 上下文）
+    collected_tools: list[str] = field(default_factory=list)  # 实际调用的 Tool 名（可追溯）
+
+
 # ===== 诊断分析 =====
 
 
@@ -222,6 +253,7 @@ class WorkflowState:
     current_step: WorkflowStep = WorkflowStep.ENV_RECOGNISING
     problem_description: str = ""
     env_info: EnvInfo | None = None
+    diagnostic_context: DiagnosticContext | None = None   # COLLECTING 产出（C-01）
     diagnosis: DiagnosisResult | None = None
     fix: FixProposal | None = None
     snapshot: SnapshotMeta | None = None

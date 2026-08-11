@@ -112,16 +112,19 @@ class WorkflowEngine:
         *,
         auto: bool = False,
         verbose: bool = False,
+        user_log_files: list[str] | None = None,
     ):
         """
         Args:
             state: 初始工作流状态
             auto: 自动模式（中间步骤只展示不暂停，REVIEWING 仍需人工）
             verbose: 详细输出
+            user_log_files: 用户上传的日志文件路径（被动接收，--log-file）
         """
         self.state = state
         self.auto = auto
         self.verbose = verbose
+        self._user_log_files = user_log_files or []
         self._console = display.get_console()
 
     # ===== 公开接口 =====
@@ -183,6 +186,7 @@ class WorkflowEngine:
         *,
         auto: bool = False,
         verbose: bool = False,
+        user_log_files: list[str] | None = None,
     ) -> WorkflowEngine:
         """创建新工作流
 
@@ -190,6 +194,7 @@ class WorkflowEngine:
             problem_description: 用户问题描述
             auto: 自动模式
             verbose: 详细输出
+            user_log_files: 用户上传的日志文件路径（--log-file）
 
         Returns:
             初始化后的 WorkflowEngine
@@ -199,7 +204,7 @@ class WorkflowEngine:
             current_step=WorkflowStep.ENV_RECOGNISING,
             problem_description=problem_description,
         )
-        engine = cls(state, auto=auto, verbose=verbose)
+        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files)
         engine._save()
         return engine
 
@@ -210,6 +215,7 @@ class WorkflowEngine:
         *,
         auto: bool = False,
         verbose: bool = False,
+        user_log_files: list[str] | None = None,
     ) -> WorkflowEngine:
         """恢复已有工作流
 
@@ -232,7 +238,7 @@ class WorkflowEngine:
                 hint="已完成/已拒绝/已回滚的会话无法恢复，请启动新工作流",
             )
 
-        engine = cls(state, auto=auto, verbose=verbose)
+        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files)
         engine._console.print(
             f"[info]恢复会话: {session_id}[/info] "
             f"(当前步骤: {STEP_LABELS.get(state.current_step, state.current_step.value)})"
@@ -289,22 +295,36 @@ class WorkflowEngine:
         self._transition(WorkflowStep.COLLECTING)
 
     def _do_collecting(self) -> None:
-        """COLLECTING: 信息采集
+        """COLLECTING: 诊断信息采集
 
-        基于环境信息 + 问题描述采集诊断上下文。
-        当前为 stub：复用 env_info。
+        调用 build_diagnostic_context() 按问题描述定向采集，
+        产出 DiagnosticContext 写入 WorkflowState。
         """
+        from galaxy_diag.diagnoser import build_diagnostic_context
+
+        if not self.state.env_info:
+            raise WorkflowError(
+                "缺少环境信息，请先完成环境感知步骤",
+                hint="工作流应从 ENV_RECOGNISING 开始",
+            )
+
         self._console.print("[info]采集诊断信息...[/info]")
-        # 当前为 stub：env_info 已在 ENV_RECOGNISING 步骤采集
-        # 实际实现：根据问题描述调用对应 Tool 采集日志/网络/存储信息
-        display.print_stub_notice("REQ-B", "信息采集")
+        ctx = build_diagnostic_context(
+            problem_description=self.state.problem_description,
+            env_info=self.state.env_info,
+            user_log_files=self._user_log_files,
+        )
+
+        self.state.diagnostic_context = ctx
+        display.print_diagnostic_context(ctx)
+        self._save()
 
         # 逐步模式：COLLECTING 后允许用户查看采集结果、补充描述
         if not self.auto:
-            self._console.print("\n[info]采集结果已展示，可补充描述或直接继续[/info]")
             supplement = interact.prompt_input("补充描述（回车跳过）", default="")
             if supplement.strip():
                 self.state.problem_description += f"\n[补充] {supplement.strip()}"
+                ctx.problem_description = self.state.problem_description
                 self._save()
             if not interact.confirm("信息采集完成，是否继续?", default=True):
                 self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")

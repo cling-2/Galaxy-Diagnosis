@@ -39,6 +39,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="自动模式（中间步骤只展示不暂停，审核步骤仍需人工）",
     )
+    sub.add_argument(
+        "--log-file",
+        action="append",
+        metavar="PATH",
+        dest="log_files",
+        help="上传日志文件供诊断参考（可多次指定）",
+    )
     sub.set_defaults(callback=handle)
 
 
@@ -81,6 +88,7 @@ def handle(args: argparse.Namespace) -> None:
     print_header()
 
     verbose = getattr(args, "verbose", False)
+    user_log_files = getattr(args, "log_files", None) or []
 
     try:
         # 解析 --resume：显式 ID / 自动最近 / 未指定
@@ -92,6 +100,7 @@ def handle(args: argparse.Namespace) -> None:
                 resume_id,
                 auto=args.auto,
                 verbose=verbose,
+                user_log_files=user_log_files,
             )
 
         else:
@@ -117,6 +126,7 @@ def handle(args: argparse.Namespace) -> None:
                     description,
                     auto=args.auto,
                     verbose=verbose,
+                    user_log_files=user_log_files,
                 )
                 console.print(f"[info]会话已创建: {engine.state.session_id}[/info]")
                 console.print(

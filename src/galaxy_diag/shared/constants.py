@@ -32,10 +32,12 @@ AUDIT_RESULT_LABELS: dict[str, str] = {
 
 # 银河平台关键组件清单（供诊断采集工具预置）
 GALAXY_COMPONENTS: list[str] = [
-    "galaxy-compute",
-    "galaxy-network",
-    "galaxy-storage",
-    "galaxy-control",
+    "galaxy-compute",      # 计算服务
+    "galaxy-network",      # 网络服务
+    "galaxy-storage",      # 存储服务
+    "galaxy-control",      # 控制面
+    "galaxy-scheduler",    # 调度器
+    "galaxy-api",          # API 网关
 ]
 
 # 关键日志路径（供采集工具预置）
@@ -44,6 +46,17 @@ KEY_LOG_PATHS: dict[str, str] = {
     "dmesg": "/var/log/dmesg",
     "kubelet": "/var/log/kubelet.log",
     "docker": "/var/log/docker.log",
+    "galaxy-control": "/var/log/galaxy/control.log",
+    "galaxy-network": "/var/log/galaxy/network.log",
+    "galaxy-storage": "/var/log/galaxy/storage.log",
+    "messages": "/var/log/messages",
+}
+
+# 容器运行时子类型中文标签
+CONTAINER_RUNTIME_LABELS: dict[str, str] = {
+    "docker": "Docker",
+    "kubernetes": "Kubernetes",
+    "unknown": "未知",
 }
 
 # 工具名与版本

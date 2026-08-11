@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from galaxy_diag.shared.types import (
         AuditRecord,
         DiagnosisResult,
+        DiagnosticContext,
         EnvInfo,
         FixProposal,
         SnapshotMeta,
@@ -162,6 +163,90 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
         console.print("\n[warning]⚠ 采集提示[/warning]")
         for w in env_info.collection_warnings:
             console.print(f"  - {w}")
+
+
+def print_diagnostic_context(ctx: DiagnosticContext) -> None:
+    """渲染诊断信息采集结果
+
+    Args:
+        ctx: 诊断上下文
+    """
+    console = get_console()
+    from galaxy_diag.shared.constants import CONTAINER_RUNTIME_LABELS
+
+    # 环境信息
+    env_label = ENV_TYPE_LABELS.get(ctx.env_info_ref, str(ctx.env_info_ref))
+    runtime_label = ""
+    if ctx.container_runtime:
+        runtime_label = f" ({CONTAINER_RUNTIME_LABELS.get(ctx.container_runtime.value, ctx.container_runtime.value)})"
+
+    console.print(f"[heading]🔍 诊断信息采集结果[/heading]")
+    console.print(f"  环境: [info]{env_label}{runtime_label}[/info]\n")
+
+    # 组件状态
+    if ctx.component_status:
+        console.print("[heading]📦 组件状态[/heading]")
+        table = Table(show_header=True, header_style="bold", pad_edge=False)
+        table.add_column("组件", min_width=18)
+        table.add_column("状态", width=10)
+        table.add_column("详情", min_width=20)
+
+        status_styles = {
+            "running": "success",
+            "failed": "danger",
+            "inactive": "warning",
+            "unknown": "dim",
+        }
+        for comp in ctx.component_status:
+            style = status_styles.get(comp.get("status", ""), "dim")
+            table.add_row(
+                comp.get("name", ""),
+                f"[{style}]{comp.get('status', 'unknown')}[/{style}]",
+                comp.get("detail", ""),
+            )
+        console.print(table)
+        console.print("")
+
+    # 日志片段
+    if ctx.log_snippets:
+        console.print(f"[heading]📄 日志片段 ({len(ctx.log_snippets)} 条)[/heading]")
+        for snip in ctx.log_snippets:
+            level_style = {"ERROR": "danger", "Warning": "warning"}.get(snip.level, "dim")
+            console.print(f"  [{level_style}][{snip.level}][/{level_style}] {snip.source}")
+            if snip.truncated:
+                console.print(f"    [dim](已截断)[/dim]")
+        console.print("")
+
+    # 系统资源
+    if ctx.system_resources:
+        console.print("[heading]💻 系统资源[/heading]")
+        for key, value in ctx.system_resources.items():
+            console.print(f"  {key}: {value}")
+        console.print("")
+
+    # 网络连通性
+    if ctx.network_checks:
+        console.print("[heading]🌐 网络连通性[/heading]")
+        for check in ctx.network_checks:
+            reachable = check.get("reachable", False)
+            style = "success" if reachable else "danger"
+            mark = "✓" if reachable else "✗"
+            console.print(f"  [{style}]{mark}[/{style}] {check.get('target', '')}")
+        console.print("")
+
+    # 用户上传
+    if ctx.user_provided:
+        console.print(f"[heading]📎 用户日志 ({len(ctx.user_provided)} 个)[/heading]")
+
+    # 采集提示
+    if ctx.collection_warnings:
+        console.print("[warning]⚠ 采集提示[/warning]")
+        for w in ctx.collection_warnings:
+            console.print(f"  - {w}")
+
+    # 采集的工具（可追溯）
+    if ctx.collected_tools:
+        console.print(f"[dim]  已调用工具: {', '.join(ctx.collected_tools)}[/dim]")
 
 
 def print_diagnosis(result: DiagnosisResult) -> None:

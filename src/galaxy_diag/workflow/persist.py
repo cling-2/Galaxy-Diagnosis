@@ -217,6 +217,7 @@ def _dict_to_state(raw: dict[str, Any]) -> WorkflowState:
         current_step=current_step,
         problem_description=raw.get("problem_description", ""),
         env_info=_parse_env_info(raw.get("env_info")),
+        diagnostic_context=_parse_diagnostic_context(raw.get("diagnostic_context")),
         diagnosis=_parse_diagnosis(raw.get("diagnosis")),
         fix=_parse_fix_proposal(raw.get("fix")),
         snapshot=_parse_snapshot_meta(raw.get("snapshot")),
@@ -234,6 +235,7 @@ def _parse_env_info(raw: dict | None) -> Any:
     if raw is None:
         return None
     from galaxy_diag.shared.types import (
+        ContainerRuntime,
         DiskInfo,
         EnvInfo,
         EnvironmentType,
@@ -249,6 +251,15 @@ def _parse_env_info(raw: dict | None) -> Any:
         env_type = EnvironmentType(env_type_str)
     except ValueError:
         env_type = EnvironmentType.BARE_METAL
+
+    # 解析 container_runtime 枚举
+    container_runtime = None
+    cr_str = raw.get("container_runtime")
+    if cr_str:
+        try:
+            container_runtime = ContainerRuntime(cr_str)
+        except ValueError:
+            container_runtime = None
 
     # 解析 hardware（类型化 dataclass）
     hw_raw = raw.get("hardware", {})
@@ -276,6 +287,7 @@ def _parse_env_info(raw: dict | None) -> Any:
 
     return EnvInfo(
         env_type=env_type,
+        container_runtime=container_runtime,
         hardware=hardware,
         storage=storage_list,
         collection_warnings=raw.get("collection_warnings", []),
@@ -307,6 +319,59 @@ def _parse_diagnosis(raw: dict | None) -> Any:
         missing_info=raw.get("missing_info", []),
         evidence=raw.get("evidence", []),
         env_type=env_type,
+    )
+
+
+def _parse_diagnostic_context(raw: dict | None) -> Any:
+    """解析 DiagnosticContext（可能为 None）"""
+    if raw is None:
+        return None
+    from galaxy_diag.shared.types import (
+        ContainerRuntime,
+        DiagnosticContext,
+        EnvironmentType,
+        LogSnippet,
+    )
+
+    # env_info_ref 枚举
+    env_type_str = raw.get("env_info_ref", "bare_metal")
+    try:
+        env_type = EnvironmentType(env_type_str)
+    except ValueError:
+        env_type = EnvironmentType.BARE_METAL
+
+    # container_runtime 枚举
+    container_runtime = None
+    cr_str = raw.get("container_runtime")
+    if cr_str:
+        try:
+            container_runtime = ContainerRuntime(cr_str)
+        except ValueError:
+            container_runtime = None
+
+    # log_snippets → LogSnippet 列表
+    log_snippets = []
+    for ls_raw in raw.get("log_snippets", []):
+        log_snippets.append(LogSnippet(
+            source=ls_raw.get("source", ""),
+            level=ls_raw.get("level", ""),
+            timestamp=ls_raw.get("timestamp", ""),
+            content=ls_raw.get("content", ""),
+            truncated=ls_raw.get("truncated", False),
+        ))
+
+    return DiagnosticContext(
+        problem_description=raw.get("problem_description", ""),
+        env_info_ref=env_type,
+        container_runtime=container_runtime,
+        component_status=raw.get("component_status", []),
+        log_snippets=log_snippets,
+        system_resources=raw.get("system_resources", {}),
+        network_checks=raw.get("network_checks", []),
+        user_provided=raw.get("user_provided", []),
+        collection_warnings=raw.get("collection_warnings", []),
+        raw_output=raw.get("raw_output", {}),
+        collected_tools=raw.get("collected_tools", []),
     )
 
 
