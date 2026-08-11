@@ -7,10 +7,13 @@
 import io
 
 from galaxy_diag.shared.types import (
+    ContainerRuntime,
+    DiagnosticContext,
     DiskInfo,
     EnvInfo,
     EnvironmentType,
     HardwareInfo,
+    LogSnippet,
     NicInfo,
     RaidCardInfo,
     StorageInfo,
@@ -139,3 +142,120 @@ class TestPersistRoundtrip:
         raw["env_info"]["hardware"]["disks"][0]["unknown_key"] = "x"
         restored = _dict_to_state(raw)
         assert restored.env_info.hardware.disks[0].model == "sda"
+
+
+# ===== DiagnosticContext 往返 =====
+
+
+def make_state_with_ctx() -> WorkflowState:
+    """构造含 DiagnosticContext 的 WorkflowState"""
+    return WorkflowState(
+        session_id="sess_ctx_001",
+        current_step=WorkflowStep.DIAGNOSING,
+        problem_description="磁盘挂载失败",
+        env_info=EnvInfo(
+            env_type=EnvironmentType.CONTAINER,
+            container_runtime=ContainerRuntime.KUBERNETES,
+            hardware=HardwareInfo(),
+        ),
+        diagnostic_context=DiagnosticContext(
+            problem_description="磁盘挂载失败",
+            env_info_ref=EnvironmentType.CONTAINER,
+            container_runtime=ContainerRuntime.KUBERNETES,
+            component_status=[
+                {"name": "galaxy-storage", "status": "failed", "detail": "kubectl: CrashLoopBackOff"},
+                {"name": "galaxy-compute", "status": "running", "detail": "kubectl: Running"},
+            ],
+            log_snippets=[
+                LogSnippet(
+                    source="kubectl:logs",
+                    level="ERROR",
+                    timestamp="",
+                    content="disk mount failed: /dev/sdb not found",
+                    truncated=False,
+                ),
+            ],
+            system_resources={"load_avg": "0.5 0.4 0.3", "mem_total_gb": 16.0},
+            network_checks=[{"target": "iptables", "reachable": True, "detail": "-P INPUT ACCEPT"}],
+            user_provided=["[user-upload:/tmp/dmesg.log]\nATA error"],
+            collection_warnings=["kubectl logs 部分容器无日志"],
+            raw_output={"component_status": "galaxy-storage: failed"},
+            collected_tools=["collect_component_status", "collect_service_logs", "collect_system_resources"],
+        ),
+    )
+
+
+class TestDiagnosticContextRoundtrip:
+    def test_diagnostic_context_roundtrip(self):
+        """DiagnosticContext 完整往返"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        assert restored.diagnostic_context is not None
+        ctx = restored.diagnostic_context
+        assert ctx.problem_description == "磁盘挂载失败"
+        assert ctx.env_info_ref == EnvironmentType.CONTAINER
+        assert ctx.container_runtime == ContainerRuntime.KUBERNETES
+
+    def test_log_snippets_typed(self):
+        """恢复后 log_snippets 是 LogSnippet 而非 dict"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        snippets = restored.diagnostic_context.log_snippets
+        assert len(snippets) == 1
+        assert isinstance(snippets[0], LogSnippet)
+        assert snippets[0].source == "kubectl:logs"
+        assert snippets[0].level == "ERROR"
+        assert "disk mount failed" in snippets[0].content
+        assert snippets[0].truncated is False
+
+    def test_component_status_preserved(self):
+        """component_status 列表内容保留"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        cs = restored.diagnostic_context.component_status
+        assert len(cs) == 2
+        assert cs[0]["name"] == "galaxy-storage"
+        assert cs[0]["status"] == "failed"
+        assert cs[1]["status"] == "running"
+
+    def test_system_resources_preserved(self):
+        """system_resources dict 保留"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        sr = restored.diagnostic_context.system_resources
+        assert sr["load_avg"] == "0.5 0.4 0.3"
+        assert sr["mem_total_gb"] == 16.0
+
+    def test_collected_tools_preserved(self):
+        """collected_tools 追溯信息保留"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        assert "collect_component_status" in restored.diagnostic_context.collected_tools
+
+    def test_none_diagnostic_context_roundtrip(self):
+        """diagnostic_context 为 None 时往返正确"""
+        state = WorkflowState(
+            session_id="sess_none_ctx",
+            current_step=WorkflowStep.ENV_RECOGNISING,
+        )
+        raw = _state_to_dict(state)
+        restored = _dict_to_state(raw)
+        assert restored.diagnostic_context is None
+
+    def test_container_runtime_in_env_info(self):
+        """EnvInfo.container_runtime 枚举往返正确"""
+        original = make_state_with_ctx()
+        raw = _state_to_dict(original)
+        restored = _dict_to_state(raw)
+
+        assert restored.env_info.container_runtime == ContainerRuntime.KUBERNETES
