@@ -128,6 +128,15 @@ class DiagnosticContext:
 # ===== 诊断分析 =====
 
 
+class DiagnosisSource(str, Enum):
+    """诊断结论来源（异常处理用，见 §异常处理设计）"""
+
+    RULE_MATCH = "rule_match"          # 规则匹配命中
+    LLM = "llm"                        # LLM 推理
+    LLM_FALLBACK = "llm_fallback"      # LLM 输出校验失败，降级修复后使用
+    ERROR_FALLBACK = "error_fallback"  # LLM 调用失败，降级兜底
+
+
 class Confidence(str, Enum):
     """诊断结论置信度"""
 
@@ -145,6 +154,9 @@ class DiagnosisResult:
     missing_info: list[str] = field(default_factory=list)  # 信息不足时，列出缺失项
     evidence: list[str] = field(default_factory=list)       # 支撑结论的证据
     env_type: EnvironmentType = EnvironmentType.BARE_METAL
+    investigation_steps: list[str] = field(default_factory=list)  # 未知故障的可执行排查步骤
+    fault_scope: str = ""                                         # 可能的故障范围描述
+    diagnosis_source: DiagnosisSource = DiagnosisSource.LLM       # 结论来源
 
 
 # ===== 修复生成 =====

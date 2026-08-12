@@ -299,7 +299,12 @@ def _parse_diagnosis(raw: dict | None) -> Any:
     """解析 DiagnosisResult（可能为 None）"""
     if raw is None:
         return None
-    from galaxy_diag.shared.types import Confidence, DiagnosisResult, EnvironmentType
+    from galaxy_diag.shared.types import (
+        Confidence,
+        DiagnosisResult,
+        DiagnosisSource,
+        EnvironmentType,
+    )
 
     conf_str = raw.get("confidence", "insufficient")
     try:
@@ -313,12 +318,21 @@ def _parse_diagnosis(raw: dict | None) -> Any:
     except ValueError:
         env_type = EnvironmentType.BARE_METAL
 
+    source_str = raw.get("diagnosis_source", "llm")
+    try:
+        diagnosis_source = DiagnosisSource(source_str)
+    except ValueError:
+        diagnosis_source = DiagnosisSource.LLM  # 向后兼容
+
     return DiagnosisResult(
         root_cause=raw.get("root_cause", ""),
         confidence=confidence,
         missing_info=raw.get("missing_info", []),
         evidence=raw.get("evidence", []),
         env_type=env_type,
+        investigation_steps=raw.get("investigation_steps", []),
+        fault_scope=raw.get("fault_scope", ""),
+        diagnosis_source=diagnosis_source,
     )
 
 

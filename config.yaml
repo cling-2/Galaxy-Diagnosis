@@ -5,7 +5,7 @@ llm:
   base_url: "http://localhost:11434/v1"   # Ollama 默认地址，可改为 vLLM 等地址
   model: "qwen3:8b"
   api_key: "ollama"                        # Ollama 不需要真实 key，OpenAI SDK 要求非空
-  timeout: 120
+  timeout: 600    # 纯 CPU 推理 8B 模型需 3-5 分钟，留足余量
   max_retries: 3
 
 hardware:

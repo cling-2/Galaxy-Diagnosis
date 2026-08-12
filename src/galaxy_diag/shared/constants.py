@@ -22,6 +22,14 @@ CONFIDENCE_LABELS: dict[str, str] = {
     "insufficient": "信息不足",
 }
 
+# 诊断结论来源中文标签
+DIAGNOSIS_SOURCE_LABELS: dict[str, str] = {
+    "rule_match": "规则匹配",
+    "llm": "LLM 推理",
+    "llm_fallback": "LLM 降级",
+    "error_fallback": "降级兜底",
+}
+
 # 审计日志结果中文标签
 AUDIT_RESULT_LABELS: dict[str, str] = {
     "success": "成功",

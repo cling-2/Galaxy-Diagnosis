@@ -46,6 +46,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         dest="log_files",
         help="上传日志文件供诊断参考（可多次指定）",
     )
+    sub.add_argument(
+        "--clean",
+        action="store_true",
+        help="清理所有未完成会话后再启动新工作流",
+    )
     sub.set_defaults(callback=handle)
 
 
@@ -91,6 +96,21 @@ def handle(args: argparse.Namespace) -> None:
     user_log_files = getattr(args, "log_files", None) or []
 
     try:
+        # --clean: 清理未完成会话后退出
+        if getattr(args, "clean", False):
+            from galaxy_diag.workflow.persist import list_sessions, _session_dir
+
+            resumable = find_resumable_sessions()
+            if resumable:
+                for s in resumable:
+                    session_file = _session_dir() / f"{s.session_id}.json"
+                    if session_file.exists():
+                        session_file.unlink()
+                console.print(f"[info]已清理 {len(resumable)} 个未完成会话[/info]")
+            else:
+                console.print("[dim]没有未完成会话需要清理[/dim]")
+            return
+
         # 解析 --resume：显式 ID / 自动最近 / 未指定
         resume_id = _resolve_resume_id(args.resume, console)
 

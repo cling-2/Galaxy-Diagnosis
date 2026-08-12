@@ -52,7 +52,10 @@ HAPPY_PATH: list[WorkflowStep] = [
 # key: 当前状态 → value: 允许的下一状态集合（不含终态，终态由特殊标记处理）
 TRANSITIONS: dict[WorkflowStep, list[WorkflowStep]] = {
     WorkflowStep.ENV_RECOGNISING: [WorkflowStep.COLLECTING],
-    WorkflowStep.COLLECTING: [WorkflowStep.DIAGNOSING],
+    WorkflowStep.COLLECTING: [
+        WorkflowStep.DIAGNOSING,            # 正常流程
+        WorkflowStep.PLANNING,              # 已知故障模式短路（REQ-F-02 验收标准 4）
+    ],
     WorkflowStep.DIAGNOSING: [
         WorkflowStep.PLANNING,           # confidence = CONFIRMED / SUSPECTED
         WorkflowStep.COLLECTING,         # confidence = INSUFFICIENT，回退补充采集

@@ -258,6 +258,14 @@ def print_diagnosis(result: DiagnosisResult) -> None:
     console = get_console()
     conf_label = CONFIDENCE_LABELS.get(result.confidence.value, str(result.confidence))
 
+    # 来源标签
+    from galaxy_diag.shared.constants import DIAGNOSIS_SOURCE_LABELS
+    from galaxy_diag.shared.types import DiagnosisSource
+
+    source_label = DIAGNOSIS_SOURCE_LABELS.get(
+        result.diagnosis_source.value, ""
+    )
+
     # 置信度样式映射
     conf_styles = {
         "confirmed": "success",
@@ -266,9 +274,21 @@ def print_diagnosis(result: DiagnosisResult) -> None:
     }
     conf_style = conf_styles.get(result.confidence.value, "warning")
 
+    # 标题：含来源标签
+    title_parts = [f"诊断结论 ({conf_label})"]
+    if source_label:
+        title_parts.append(source_label)
+    title_text = f"[{conf_style}]{' - '.join(title_parts)}[/{conf_style}]"
+
+    # ERROR_FALLBACK 时加警告前缀
+    if result.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
+        console.print(
+            "[error]⚠ 推理服务不可用，根因分析未完成[/error]"
+        )
+
     console.print(Panel(
         Markdown(result.root_cause or "未得出结论"),
-        title=f"[{conf_style}]诊断结论 ({conf_label})[/{conf_style}]",
+        title=title_text,
         border_style=conf_style,
         padding=(1, 2),
     ))
@@ -278,6 +298,16 @@ def print_diagnosis(result: DiagnosisResult) -> None:
         console.print("\n[heading]📎 支撑证据[/heading]")
         for i, ev in enumerate(result.evidence, 1):
             console.print(f"  {i}. {ev}")
+
+    # 故障范围
+    if result.fault_scope:
+        console.print(f"\n[info]影响范围: {result.fault_scope}[/info]")
+
+    # 排查步骤
+    if result.investigation_steps:
+        console.print("\n[info]排查步骤:[/info]")
+        for i, step in enumerate(result.investigation_steps, 1):
+            console.print(f"  [dim]{i}.[/dim] {step}")
 
     # 缺失信息
     if result.missing_info:

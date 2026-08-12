@@ -19,6 +19,7 @@ from galaxy_diag.shared.types import (
     CommandTemplate,
     Confidence,
     DiagnosisResult,
+    DiagnosisSource,
     EnvInfo,
     EnvironmentType,
     FixProposal,
@@ -45,6 +46,10 @@ from galaxy_diag.workflow.states import (
     VERIFYING_NEXT_ON_SUCCESS,
     is_valid_transition,
 )
+
+
+# 诊断回退次数上限（防止 LLM 反复返回 INSUFFICIENT 死循环）
+MAX_DIAGNOSING_RETRIES = 2
 
 
 # ===== 步骤回调协议 =====
@@ -126,6 +131,13 @@ class WorkflowEngine:
         self.verbose = verbose
         self._user_log_files = user_log_files or []
         self._console = display.get_console()
+
+        # 初始化 ModelAdapter（延迟导入避免循环依赖）
+        from galaxy_diag.config.settings import load_config
+        from galaxy_diag.model.client import ModelAdapter
+
+        config = load_config()
+        self._model_adapter = ModelAdapter(config.llm)
 
     # ===== 公开接口 =====
 
@@ -301,6 +313,7 @@ class WorkflowEngine:
         产出 DiagnosticContext 写入 WorkflowState。
         """
         from galaxy_diag.diagnoser import build_diagnostic_context
+        from galaxy_diag.diagnoser.rules import match_rules
 
         if not self.state.env_info:
             raise WorkflowError(
@@ -313,11 +326,23 @@ class WorkflowEngine:
             problem_description=self.state.problem_description,
             env_info=self.state.env_info,
             user_log_files=self._user_log_files,
+            existing_context=self.state.diagnostic_context,  # 增量采集
         )
 
         self.state.diagnostic_context = ctx
         display.print_diagnostic_context(ctx)
         self._save()
+
+        # 短路预检：已知故障模式可跳过 DIAGNOSING（REQ-F-02 验收标准 4）
+        pre_diagnosis = match_rules(ctx)
+        if pre_diagnosis is not None and pre_diagnosis.confidence == Confidence.CONFIRMED:
+            pre_diagnosis.diagnosis_source = DiagnosisSource.RULE_MATCH
+            self.state.diagnosis = pre_diagnosis
+            display.print_diagnosis(pre_diagnosis)
+            self._console.print("[dim]已知故障模式，跳过深度诊断[/dim]")
+            self._save()
+            self._transition(WorkflowStep.PLANNING)  # 短路跳过 DIAGNOSING
+            return
 
         # 逐步模式：COLLECTING 后允许用户查看采集结果、补充描述
         if not self.auto:
@@ -335,14 +360,58 @@ class WorkflowEngine:
     def _do_diagnosing(self) -> None:
         """DIAGNOSING: 根因分析
 
-        调用 diagnoser 模块推理根因。
-        当前为 stub：返回 mock 诊断结果。
+        调用 diagnoser.diagnose() 推理根因（规则匹配 + LLM）。
         """
-        display.print_stub_notice("REQ-C", "诊断分析")
-        diagnosis = self._stub_diagnose()
+        from galaxy_diag.diagnoser import diagnose
+
+        if not self.state.diagnostic_context:
+            raise WorkflowError(
+                "缺少诊断上下文，请先完成信息采集步骤",
+                hint="工作流应从 ENV_RECOGNISING 开始",
+            )
+        if not self.state.env_info:
+            raise WorkflowError(
+                "缺少环境信息，请先完成环境感知步骤",
+                hint="工作流应从 ENV_RECOGNISING 开始",
+            )
+
+        self._console.print("[info]分析故障根因...[/info]")
+        self._console.print(
+            "[dim]  LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟，请耐心等待...[/dim]"
+        )
+
+        # 检查回退次数上限
+        retry_count = sum(
+            1 for h in self.state.history
+            if h.get("from") == "diagnosing" and h.get("to") == "collecting"
+        )
+        if retry_count >= MAX_DIAGNOSING_RETRIES:
+            self._console.print(
+                f"[warning]已回退补充采集 {retry_count} 次，"
+                f"基于当前信息继续分析[/warning]"
+            )
+
+        diagnosis = diagnose(
+            problem_description=self.state.problem_description,
+            env_info=self.state.env_info,
+            diagnostic_context=self.state.diagnostic_context,
+            model_adapter=self._model_adapter,
+        )
 
         self.state.diagnosis = diagnosis
+
+        # 根据来源输出提示（异常处理：明确告知用户故障原因）
+        if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
+            self._console.print(
+                "[error]⚠ LLM 推理服务不可用，已降级为信息不足结论[/error]"
+            )
+        elif diagnosis.diagnosis_source == DiagnosisSource.LLM_FALLBACK:
+            self._console.print(
+                "[warning]⚠ LLM 推理结果校验部分失败，已自动修复[/warning]"
+            )
+
         display.print_diagnosis(diagnosis)
+        self._save()
 
         # 分支判断
         if diagnosis.confidence == Confidence.INSUFFICIENT:
@@ -350,12 +419,16 @@ class WorkflowEngine:
             self._console.print("\n[warning]⚠ 信息不足，需要补充采集[/warning]")
             if not self.auto:
                 if interact.confirm("是否补充采集信息?", default=True):
+                    supplement = "；".join(diagnosis.missing_info)
+                    self.state.problem_description += f"\n[补充采集] {supplement}"
                     self._transition(WorkflowStep.COLLECTING)
                 else:
                     self._console.print("[dim]跳过补充采集，基于当前信息继续[/dim]")
                     self._transition(WorkflowStep.PLANNING)
             else:
                 # 自动模式：自动回退补充采集
+                supplement = "；".join(diagnosis.missing_info)
+                self.state.problem_description += f"\n[补充采集] {supplement}"
                 self._transition(WorkflowStep.COLLECTING)
             return
 
@@ -635,6 +708,9 @@ class WorkflowEngine:
             ],
             missing_info=[],
             env_type=EnvironmentType.VM,
+            investigation_steps=["检查驱动模块: modprobe --dry-run vmw_pvscsi"],
+            fault_scope="存储层：VM 磁盘控制器驱动",
+            diagnosis_source=DiagnosisSource.RULE_MATCH,
         )
 
     def _stub_fix(self) -> FixProposal:

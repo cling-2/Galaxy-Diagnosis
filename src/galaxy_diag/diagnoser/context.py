@@ -294,6 +294,7 @@ def build_diagnostic_context(
     problem_description: str,
     env_info: "EnvInfo",
     user_log_files: "Sequence[str] | None" = None,
+    existing_context: "DiagnosticContext | None" = None,
 ) -> DiagnosticContext:
     """COLLECTING 顶层编排：关键词匹配 → 定向采集 → 预处理 → 组装上下文
 
@@ -301,6 +302,7 @@ def build_diagnostic_context(
         problem_description: 用户问题描述（含补充）
         env_info: 环境感知产出（ENV_RECOGNISING 步骤）
         user_log_files: 用户上传的日志文件路径（被动接收）
+        existing_context: 已有的诊断上下文（增量采集时跳过已调用的 Tool）
 
     Returns:
         DiagnosticContext 结构化诊断上下文
@@ -314,6 +316,13 @@ def build_diagnostic_context(
     # 1. 关键词匹配，决定采集哪些 Tool
     tools_to_run = match_tools_by_keywords(problem_description)
 
+    # 1.5 增量采集：若已有上下文，仅调用新增 Tool
+    if existing_context is not None:
+        already_collected = set(existing_context.collected_tools)
+        new_tools = tools_to_run - already_collected
+    else:
+        new_tools = tools_to_run
+
     # 2. 定向采集（各 Tool 独立 try/except，单项失败不阻断）
     warnings: list[str] = []
     component_status: list[dict] = []
@@ -321,7 +330,7 @@ def build_diagnostic_context(
     system_resources: dict = {}
     network_checks: list[dict] = []
 
-    if TOOL_COMPONENT in tools_to_run:
+    if TOOL_COMPONENT in new_tools:
         component_status = _safe_collect(
             collect_component_status,
             warnings,
@@ -329,7 +338,7 @@ def build_diagnostic_context(
             container_runtime,
             list(GALAXY_COMPONENTS),
         )
-    if TOOL_LOGS in tools_to_run:
+    if TOOL_LOGS in new_tools:
         log_snippets = _safe_collect(
             collect_service_logs,
             warnings,
@@ -342,7 +351,7 @@ def build_diagnostic_context(
     system_resources = _safe_collect(
         collect_system_resources, warnings
     )
-    if TOOL_NETWORK in tools_to_run:
+    if TOOL_NETWORK in new_tools:
         network_checks = _safe_collect(
             collect_network_connectivity,
             warnings,
@@ -353,6 +362,15 @@ def build_diagnostic_context(
 
     # 3. 被动接收：用户上传日志
     user_provided = _load_user_logs(user_log_files, warnings)
+
+    # 3.5 增量合并：若已有上下文，将新采集结果追加到已有数据
+    if existing_context is not None:
+        component_status = existing_context.component_status + component_status
+        log_snippets = existing_context.log_snippets + log_snippets
+        system_resources = {**existing_context.system_resources, **system_resources}
+        network_checks = existing_context.network_checks + network_checks
+        user_provided = existing_context.user_provided + user_provided
+        warnings = existing_context.collection_warnings + warnings
 
     # 4. 预处理与体积控制
     log_snippets = preprocess_logs(log_snippets, budget_kb=32)
@@ -373,7 +391,10 @@ def build_diagnostic_context(
         )
 
     # 6. 组装 collected_tools（实际成功调用的，可追溯）
-    collected_tools = list(tools_to_run)
+    if existing_context is not None:
+        collected_tools = list(set(existing_context.collected_tools) | tools_to_run)
+    else:
+        collected_tools = list(tools_to_run)
 
     # 7. 组装 DiagnosticContext
     ctx = DiagnosticContext(
