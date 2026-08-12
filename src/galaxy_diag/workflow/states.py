@@ -15,8 +15,9 @@ STEP_LABELS: dict[WorkflowStep, str] = {
     WorkflowStep.COLLECTING: "信息采集",
     WorkflowStep.DIAGNOSING: "根因分析",
     WorkflowStep.PLANNING: "修复建议生成",
-    WorkflowStep.SECURITY_CHECKING: "安全检测",
+    WorkflowStep.SECURITY_CHECKING: "生成后检测",
     WorkflowStep.REVIEWING: "人工审核",
+    WorkflowStep.EXECUTION_GUARD: "执行前熔断",
     WorkflowStep.SNAPSHOT: "创建快照",
     WorkflowStep.EXECUTING: "执行修复",
     WorkflowStep.VERIFYING: "结果验证",
@@ -28,8 +29,9 @@ STEP_DESCRIPTIONS: dict[WorkflowStep, str] = {
     WorkflowStep.COLLECTING: "采集日志、系统状态等诊断信息",
     WorkflowStep.DIAGNOSING: "基于诊断上下文推理根因，声明不确定性",
     WorkflowStep.PLANNING: "生成修复命令/脚本建议",
-    WorkflowStep.SECURITY_CHECKING: "对修复建议做语法/危险/兼容性多维检测",
+    WorkflowStep.SECURITY_CHECKING: "D-03 生成后检测：语法+兼容性+危险建议性警告",
     WorkflowStep.REVIEWING: "人工审核修复建议 (确认/拒绝/修改)",
+    WorkflowStep.EXECUTION_GUARD: "E-02 执行前熔断：危险命令强制拦截+影响范围评估",
     WorkflowStep.SNAPSHOT: "执行前创建恢复快照",
     WorkflowStep.EXECUTING: "按步骤执行修复并监控",
     WorkflowStep.VERIFYING: "验证修复是否生效",
@@ -43,6 +45,7 @@ HAPPY_PATH: list[WorkflowStep] = [
     WorkflowStep.PLANNING,
     WorkflowStep.SECURITY_CHECKING,
     WorkflowStep.REVIEWING,
+    WorkflowStep.EXECUTION_GUARD,
     WorkflowStep.SNAPSHOT,
     WorkflowStep.EXECUTING,
     WorkflowStep.VERIFYING,
@@ -66,8 +69,12 @@ TRANSITIONS: dict[WorkflowStep, list[WorkflowStep]] = {
         WorkflowStep.PLANNING,           # 检测失败，重新生成
     ],
     WorkflowStep.REVIEWING: [
-        WorkflowStep.SNAPSHOT,           # 用户确认 yes
-        WorkflowStep.PLANNING,           # 用户编辑 edit
+        WorkflowStep.EXECUTION_GUARD,    # 用户确认 yes → 执行前熔断
+        WorkflowStep.SECURITY_CHECKING,  # 用户编辑 edit → 重走 D-03 检测
+    ],
+    WorkflowStep.EXECUTION_GUARD: [
+        WorkflowStep.SNAPSHOT,           # 熔断通过 → 创建快照
+        WorkflowStep.REVIEWING,          # WARNING 需额外确认 → 回到审核
     ],
     WorkflowStep.SNAPSHOT: [WorkflowStep.EXECUTING],
     WorkflowStep.EXECUTING: [

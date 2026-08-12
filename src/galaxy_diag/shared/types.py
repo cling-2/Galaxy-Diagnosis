@@ -162,6 +162,89 @@ class DiagnosisResult:
 # ===== 修复生成 =====
 
 
+class FixSource(str, Enum):
+    """修复建议来源（对齐 DiagnosisSource 设计）
+
+    无 RULE_MATCH：修复需根据具体环境参数动态生成（IP、挂载点、设备名等），
+    纯模板匹配无法满足 D-01 参数化要求。
+    """
+
+    LLM = "llm"                        # LLM 生成
+    LLM_FALLBACK = "llm_fallback"      # LLM 输出校验失败，降级修复后使用
+    ERROR_FALLBACK = "error_fallback"  # LLM 调用失败，降级兜底
+
+
+@dataclass
+class FixStep:
+    """LLM 输出的单步修复建议
+
+    postprocess 解析 LLM JSON 后的中间结构，供 template.py / generator.py 消费。
+    与 CommandTemplate 的区别：FixStep 是 LLM 原始语义，CommandTemplate 是经过
+    占位符识别和风险标注后的可编辑结构。
+    """
+
+    command: str = ""              # 含占位符如 <IP>, <MOUNT_POINT>
+    description: str = ""          # 步骤说明
+    risk_note: str = ""            # 安全风险提示
+    parameters: dict[str, str] = field(default_factory=dict)  # 占位符名 → 推荐默认值
+    is_verification: bool = False  # 是否为验证步骤（验证步骤风险低，不影响系统状态）
+
+
+@dataclass
+class FixSuggestion:
+    """postprocess → template/generator 的中间结构
+
+    由 postprocess.py 从 LLM 输出解析得到，是 template.py 和 generator.py 的输入。
+    与 FixProposal 的区别：FixSuggestion 是 LLM 原始语义（未经占位符引擎处理、
+    未经脚本组装、未经检测），FixProposal 是最终产出（经管道全流程处理）。
+    """
+
+    steps: list[FixStep] = field(default_factory=list)
+    script_language: Literal["bash", "python"] | None = None  # 推荐脚本语言
+    risk_notes: list[str] = field(default_factory=list)        # 整体风险提示
+    impact_scope: str = ""                                     # 影响范围描述
+    source: FixSource = FixSource.LLM                           # 来源标注
+
+
+class CheckSeverity(str, Enum):
+    """检测问题严重级别"""
+
+    CRITICAL = "critical"  # 阻止执行（如语法错误、环境不兼容）
+    WARNING = "warning"    # 允许但需额外确认（如 chmod 777、重启服务）
+    INFO = "info"          # 仅提示
+
+
+@dataclass
+class CheckIssue:
+    """单个检测问题"""
+
+    category: Literal["syntax", "danger", "compatibility"] = "syntax"  # 检测维度
+    severity: CheckSeverity = CheckSeverity.WARNING
+    message: str = ""              # 问题描述
+    command_index: int = -1        # 关联的命令索引（-1 表示整体脚本）
+    suggestion: str = ""           # 修复建议
+
+
+@dataclass
+class CheckResult:
+    """多维检测结果"""
+
+    issues: list[CheckIssue] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        """是否通过检测（无 CRITICAL 级别问题）"""
+        return not any(i.severity == CheckSeverity.CRITICAL for i in self.issues)
+
+    @property
+    def has_critical(self) -> bool:
+        return any(i.severity == CheckSeverity.CRITICAL for i in self.issues)
+
+    @property
+    def has_warning(self) -> bool:
+        return any(i.severity == CheckSeverity.WARNING for i in self.issues)
+
+
 @dataclass
 class CommandTemplate:
     """单条命令模板"""
@@ -170,6 +253,7 @@ class CommandTemplate:
     description: str = ""
     risk_note: str = ""  # 安全风险提示
     editable_params: dict[str, str] = field(default_factory=dict)  # 占位符名 → 默认值
+    is_verification: bool = False  # 是否为验证步骤（只读操作，不影响系统状态）
 
 
 @dataclass
@@ -183,6 +267,8 @@ class FixProposal:
     check_passed: bool = False  # 多维检测是否通过
     check_issues: list[str] = field(default_factory=list)  # 检测发现的问题
     impact_scope: str = ""  # 影响范围描述
+    source: FixSource = FixSource.LLM  # 来源标注
+    check_detail: CheckResult | None = None  # 详细检测结果（供 display 展示）
 
 
 # ===== 安全可控 =====
@@ -228,8 +314,9 @@ class WorkflowStep(str, Enum):
     COLLECTING = "collecting"                # 信息采集
     DIAGNOSING = "diagnosing"                # 根因分析
     PLANNING = "planning"                    # 修复建议生成
-    SECURITY_CHECKING = "security_checking"  # 安全检测
+    SECURITY_CHECKING = "security_checking"  # D-03: 生成后检测
     REVIEWING = "reviewing"                  # 人工审核
+    EXECUTION_GUARD = "execution_guard"      # E-02: 执行前熔断
     SNAPSHOT = "snapshot"                    # 创建恢复快照
     EXECUTING = "executing"                  # 执行修复
     VERIFYING = "verifying"                  # 结果验证

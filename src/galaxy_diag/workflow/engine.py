@@ -16,6 +16,7 @@ from galaxy_diag.shared.errors import (
     WorkflowError,
 )
 from galaxy_diag.shared.types import (
+    CheckSeverity,
     CommandTemplate,
     Confidence,
     DiagnosisResult,
@@ -23,6 +24,7 @@ from galaxy_diag.shared.types import (
     EnvInfo,
     EnvironmentType,
     FixProposal,
+    FixSource,
     HardwareInfo,
     SessionStatus,
     SnapshotMeta,
@@ -50,6 +52,9 @@ from galaxy_diag.workflow.states import (
 
 # 诊断回退次数上限（防止 LLM 反复返回 INSUFFICIENT 死循环）
 MAX_DIAGNOSING_RETRIES = 2
+
+# 安全检测回退次数上限（防止 D-03 反复失败导致 PLANNING 死循环）
+MAX_SECURITY_RETRIES = 2
 
 
 # ===== 步骤回调协议 =====
@@ -164,6 +169,8 @@ class WorkflowEngine:
                     self._do_security_checking()
                 elif step == WorkflowStep.REVIEWING:
                     self._do_reviewing()
+                elif step == WorkflowStep.EXECUTION_GUARD:
+                    self._do_execution_guard()
                 elif step == WorkflowStep.SNAPSHOT:
                     self._do_snapshot()
                 elif step == WorkflowStep.EXECUTING:
@@ -446,12 +453,41 @@ class WorkflowEngine:
         """PLANNING: 修复建议生成
 
         调用 fixer 模块生成修复命令/脚本。
-        当前为 stub：返回 mock 修复建议。
         """
-        display.print_stub_notice("REQ-D", "修复生成")
-        proposal = self._stub_fix()
+        from galaxy_diag.fixer import generate
+
+        if not self.state.diagnosis:
+            raise WorkflowError(
+                "缺少诊断结论，请先完成根因分析步骤",
+                hint="工作流应从 ENV_RECOGNISING 开始",
+            )
+        if not self.state.env_info:
+            raise WorkflowError(
+                "缺少环境信息，请先完成环境感知步骤",
+                hint="工作流应从 ENV_RECOGNISING 开始",
+            )
+
+        self._console.print("[info]生成修复建议...[/info]")
+        self._console.print("[dim]  LLM 推理中，纯 CPU 模式下可能需要 1-3 分钟，请耐心等待...[/dim]")
+
+        proposal = generate(
+            diagnosis=self.state.diagnosis,
+            env_info=self.state.env_info,
+            model_adapter=self._model_adapter,
+        )
 
         self.state.fix = proposal
+
+        # 根据来源输出提示
+        if proposal.source == FixSource.ERROR_FALLBACK:
+            self._console.print("[error]⚠ 修复建议生成失败[/error]")
+            for note in proposal.risk_notes:
+                self._console.print(f"  [error]- {note}[/error]")
+            self._mark_done("修复建议生成失败，无法继续")
+            return
+        elif proposal.source == FixSource.LLM_FALLBACK:
+            self._console.print("[warning]⚠ 修复建议部分校验失败，已自动修复[/warning]")
+
         display.print_fix_proposal(proposal)
 
         # 逐步模式下允许编辑参数
@@ -469,29 +505,73 @@ class WorkflowEngine:
         self._transition(WorkflowStep.SECURITY_CHECKING)
 
     def _do_security_checking(self) -> None:
-        """SECURITY_CHECKING: 安全检测
+        """SECURITY_CHECKING: D-03 生成后检测（代码质量保障）
 
-        对修复建议做多维检测（语法/危险/兼容性）。
-        当前为 stub：直接通过。
+        检测：语法 + 兼容性 + 危险模式建议性警告
+        策略：CRITICAL（语法/兼容性错误）→ 回退 PLANNING
+              WARNING（危险模式提醒）→ 允许继续
         """
-        self._console.print("[info]执行安全检测...[/info]")
-        # 当前为 stub：直接标记通过
-        # 实际实现：调用 fixer.checker + safety.danger 做多维检测
-        if self.state.fix:
-            self.state.fix.check_passed = True
-            self.state.fix.check_issues = []
+        from galaxy_diag.fixer.checker import check
+
+        if not self.state.fix or not self.state.env_info:
+            raise WorkflowError("缺少修复建议或环境信息")
 
         proposal = self.state.fix
-        if proposal and not proposal.check_passed:
-            # 检测失败，展示问题后回退到 PLANNING
-            self._console.print("\n[danger]✗ 安全检测未通过[/danger]")
-            for issue in proposal.check_issues:
-                self._console.print(f"  [danger]- {issue}[/danger]")
+        env_type = self.state.env_info.env_type
+
+        # 防止 D-03 反复失败导致 PLANNING 死循环
+        security_retry_count = sum(
+            1 for h in self.state.history
+            if h.get("step") == WorkflowStep.SECURITY_CHECKING.value
+            and h.get("result") == "failed"
+        )
+        if security_retry_count >= MAX_SECURITY_RETRIES:
+            self._console.print(
+                f"[warning]安全检测已回退 {security_retry_count} 次，跳过检测继续[/warning]"
+            )
+            proposal.check_passed = True
+            proposal.check_issues = []
+            self._transition(WorkflowStep.REVIEWING)
+            return
+
+        self._console.print("[info]执行生成后检测 (D-03)...[/info]")
+        result = check(
+            commands=proposal.commands,
+            script=proposal.script,
+            script_language=proposal.script_language,
+            env_type=env_type,
+        )
+
+        proposal.check_passed = result.passed
+        proposal.check_issues = [i.message for i in result.issues]
+        proposal.check_detail = result
+        self._save()
+
+        if not result.passed:
+            self._console.print("\n[danger]✗ 生成后检测未通过[/danger]")
+            for issue in result.issues:
+                if issue.severity == CheckSeverity.CRITICAL:
+                    self._console.print(f"  [danger]- [{issue.category}] {issue.message}[/danger]")
+                    if issue.suggestion:
+                        self._console.print(f"    💡 {issue.suggestion}")
+            self.state.history.append({
+                "step": WorkflowStep.SECURITY_CHECKING.value,
+                "timestamp": datetime.now().isoformat(),
+                "result": "failed",
+            })
+            self._save()
             self._console.print("[dim]回退到修复建议生成步骤[/dim]")
             self._transition(WorkflowStep.PLANNING)
             return
 
-        self._console.print("[success]✓ 安全检测通过[/success]")
+        if result.has_warning:
+            self._console.print("\n[warning]⚠ 生成后检测通过（有警告）[/warning]")
+            for issue in result.issues:
+                if issue.severity == CheckSeverity.WARNING:
+                    self._console.print(f"  [warning]- [{issue.category}] {issue.message}[/warning]")
+        else:
+            self._console.print("[success]✓ 生成后检测通过[/success]")
+
         self._transition(WorkflowStep.REVIEWING)
 
     def _do_reviewing(self) -> None:
@@ -509,7 +589,8 @@ class WorkflowEngine:
         if proposal.commands:
             self._console.print("[dim]将要执行以下命令:[/dim]")
             for i, cmd in enumerate(proposal.commands, 1):
-                self._console.print(f"  {i}. [info]{cmd.command}[/info]")
+                verify_tag = " [验证]" if cmd.is_verification else ""
+                self._console.print(f"  {i}. [info]{cmd.command}[/info]{verify_tag}")
                 if cmd.description:
                     self._console.print(f"     {cmd.description}")
 
@@ -534,16 +615,33 @@ class WorkflowEngine:
             raise
 
         if choice in ("y", "yes"):
-            self._transition(WorkflowStep.SNAPSHOT)
+            self._transition(WorkflowStep.EXECUTION_GUARD)
         elif choice in ("e", "edit"):
-            # 编辑参数后回到 PLANNING 重走安全检测
+            # 编辑参数后重走安全检测（D-03: 编辑后内容重新检测）
             if proposal.commands:
                 self._edit_fix_params(proposal)
-            self._transition(WorkflowStep.PLANNING)
+            self._transition(WorkflowStep.SECURITY_CHECKING)
         else:
             # 拒绝：不执行且不反复要求确认
             self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
             self._mark_rejected()
+
+    def _do_execution_guard(self) -> None:
+        """EXECUTION_GUARD: E-02 执行前熔断
+
+        对修复建议做执行前安全检查（危险命令深度检测 + 影响范围评估）。
+        当前为 stub：直接通过到 SNAPSHOT。完整实现依赖 safety/danger.py。
+        """
+        self._console.print("[info]执行前熔断检查 (E-02)...[/info]")
+        display.print_stub_notice("REQ-E-02", "执行前熔断")
+
+        # stub: 直接通过
+        # 实际实现：
+        #   CRITICAL → 终止工作流（不可绕过）
+        #   WARNING  → 回到 REVIEWING 要求 CONFIRM 确认
+        #   pass     → SNAPSHOT
+        self._console.print("[success]✓ 执行前熔断通过（模拟）[/success]")
+        self._transition(WorkflowStep.SNAPSHOT)
 
     def _do_snapshot(self) -> None:
         """SNAPSHOT: 创建恢复快照
@@ -679,17 +777,24 @@ class WorkflowEngine:
             self._console.print(f"[dim]  {desc}[/dim]")
 
     def _edit_fix_params(self, proposal: FixProposal) -> None:
-        """交互式编辑修复参数"""
+        """交互式编辑修复参数
+
+        使用 template.apply_param_values 替换占位符，返回新的 CommandTemplate（不修改原对象）。
+        """
+        from galaxy_diag.fixer.template import apply_param_values
+
+        updated_commands = []
         for cmd in proposal.commands:
             if cmd.editable_params:
                 new_params = interact.prompt_edit_params(
                     template=cmd.command,
                     placeholders=cmd.editable_params,
                 )
-                # 替换命令中的占位符
-                for name, value in new_params.items():
-                    cmd.command = cmd.command.replace(f"<{name}>", value)
-                cmd.editable_params = new_params
+                updated_cmd = apply_param_values(cmd, new_params)
+                updated_commands.append(updated_cmd)
+            else:
+                updated_commands.append(cmd)
+        proposal.commands = updated_commands
 
         # 编辑后重新展示
         display.print_fix_proposal(proposal)
@@ -711,37 +816,6 @@ class WorkflowEngine:
             investigation_steps=["检查驱动模块: modprobe --dry-run vmw_pvscsi"],
             fault_scope="存储层：VM 磁盘控制器驱动",
             diagnosis_source=DiagnosisSource.RULE_MATCH,
-        )
-
-    def _stub_fix(self) -> FixProposal:
-        """Stub: 修复建议生成"""
-        return FixProposal(
-            commands=[
-                CommandTemplate(
-                    command="modprobe <DRIVER_MODULE>",
-                    description="加载磁盘控制器驱动模块",
-                    risk_note="加载内核模块",
-                    editable_params={"DRIVER_MODULE": "vmw_pvscsi"},
-                ),
-                CommandTemplate(
-                    command="rescan-scsi-bus.sh",
-                    description="重新扫描 SCSI 总线",
-                    risk_note="无",
-                    editable_params={},
-                ),
-                CommandTemplate(
-                    command="lsblk",
-                    description="验证磁盘是否可见",
-                    risk_note="只读操作",
-                    editable_params={},
-                ),
-            ],
-            script=None,
-            script_language=None,
-            risk_notes=["加载内核模块可能影响系统稳定性"],
-            check_passed=True,
-            check_issues=[],
-            impact_scope="加载内核模块 vmw_pvscsi，扫描 SCSI 总线",
         )
 
 

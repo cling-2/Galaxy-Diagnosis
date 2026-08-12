@@ -15,7 +15,13 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.theme import Theme
 
-from galaxy_diag.shared.constants import CONFIDENCE_LABELS, ENV_TYPE_LABELS
+from galaxy_diag.shared.constants import (
+    CHECK_CATEGORY_LABELS,
+    CHECK_SEVERITY_LABELS,
+    CONFIDENCE_LABELS,
+    ENV_TYPE_LABELS,
+    FIX_SOURCE_LABELS,
+)
 
 if TYPE_CHECKING:
     from galaxy_diag.shared.types import (
@@ -324,6 +330,11 @@ def print_fix_proposal(proposal: FixProposal) -> None:
     """
     console = get_console()
 
+    # 来源标签
+    source_label = FIX_SOURCE_LABELS.get(proposal.source.value, "")
+    if source_label:
+        console.print(f"[dim]来源: {source_label}[/dim]")
+
     # 命令步骤表格
     if proposal.commands:
         console.print("[heading]🔧 修复步骤[/heading]")
@@ -332,11 +343,13 @@ def print_fix_proposal(proposal: FixProposal) -> None:
         table.add_column("命令", min_width=30)
         table.add_column("说明", min_width=15)
         table.add_column("风险", width=12)
+        table.add_column("类型", width=6)
 
         for i, cmd in enumerate(proposal.commands, 1):
             risk_style = "danger" if cmd.risk_note else "dim"
             risk_text = f"[{risk_style}]{cmd.risk_note or '无'}[/{risk_style}]"
-            table.add_row(str(i), cmd.command, cmd.description, risk_text)
+            verify_text = "[info]验证[/info]" if cmd.is_verification else ""
+            table.add_row(str(i), cmd.command, cmd.description, risk_text, verify_text)
 
         console.print(table)
 
@@ -345,8 +358,22 @@ def print_fix_proposal(proposal: FixProposal) -> None:
         console.print(f"\n[heading]📜 修复脚本 ({proposal.script_language or 'bash'})[/heading]")
         console.print(Panel(proposal.script, border_style="dim", padding=(1, 2)))
 
-    # 检测结果
-    if proposal.check_issues:
+    # 结构化检测结果（check_detail 优先于 check_issues）
+    if proposal.check_detail is not None:
+        result = proposal.check_detail
+        if result.issues:
+            status_style = "danger" if result.has_critical else "warning"
+            console.print(f"\n[{status_style}]🔍 多维检测结果[/{status_style}]")
+            for issue in result.issues:
+                sev_label = CHECK_SEVERITY_LABELS.get(issue.severity.value, issue.severity.value)
+                cat_label = CHECK_CATEGORY_LABELS.get(issue.category, issue.category)
+                sev_style = "danger" if issue.severity.value == "critical" else "warning"
+                console.print(
+                    f"  [{sev_style}][{sev_label}][{cat_label}][/{sev_style}] {issue.message}"
+                )
+                if issue.suggestion:
+                    console.print(f"    [dim]💡 {issue.suggestion}[/dim]")
+    elif proposal.check_issues:
         console.print(f"\n[{'danger' if not proposal.check_passed else 'warning'}]🔍 多维检测结果[/{'danger' if not proposal.check_passed else 'warning'}]")
         for issue in proposal.check_issues:
             console.print(f"  [danger]✗ {issue}[/danger]")

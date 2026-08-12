@@ -67,6 +67,27 @@ CONTAINER_RUNTIME_LABELS: dict[str, str] = {
     "unknown": "未知",
 }
 
+# 修复建议来源中文标签
+FIX_SOURCE_LABELS: dict[str, str] = {
+    "llm": "LLM 生成",
+    "llm_fallback": "LLM 降级",
+    "error_fallback": "降级兜底",
+}
+
+# 检测严重级别中文标签
+CHECK_SEVERITY_LABELS: dict[str, str] = {
+    "critical": "严重",
+    "warning": "警告",
+    "info": "提示",
+}
+
+# 检测维度中文标签
+CHECK_CATEGORY_LABELS: dict[str, str] = {
+    "syntax": "语法",
+    "danger": "危险",
+    "compatibility": "兼容性",
+}
+
 # 工具名与版本
 TOOL_NAME = "galaxy-diag"
 TOOL_VERSION = "0.1.0"
