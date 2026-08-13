@@ -323,7 +323,7 @@ galaxy-diag run -d "数据磁盘未识别" --auto
 | DIAGNOSING 后 | 查看结论、决定是否继续 | 自动展示 + 确认 |
 | PLANNING 后 | 编辑修复参数 | `--edit` 或交互提示 |
 | SECURITY_CHECKING 后 | 查看检测结果 | 自动展示（D-03 WARNING 提醒） |
-| REVIEWING | 确认 / 拒绝 / 修改 | y / n / edit |
+| REVIEWING | 确认 / 拒绝 / 编辑参数 / 删除步骤 / 重排步骤 | y / n / e / d / r |
 | EXECUTION_GUARD | 查看影响范围、额外确认（CONFIRM） | 自动展示 + CONFIRM 输入 |
 
 ## 6. 异常处理

@@ -382,11 +382,6 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        self._console.print("[info]分析故障根因...[/info]")
-        self._console.print(
-            "[dim]  LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟，请耐心等待...[/dim]"
-        )
-
         # 检查回退次数上限
         retry_count = sum(
             1 for h in self.state.history
@@ -398,12 +393,16 @@ class WorkflowEngine:
                 f"基于当前信息继续分析[/warning]"
             )
 
-        diagnosis = diagnose(
-            problem_description=self.state.problem_description,
-            env_info=self.state.env_info,
-            diagnostic_context=self.state.diagnostic_context,
-            model_adapter=self._model_adapter,
-        )
+        with self._console.status(
+            "[info]分析故障根因... LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟[/info]",
+            spinner="dots",
+        ):
+            diagnosis = diagnose(
+                problem_description=self.state.problem_description,
+                env_info=self.state.env_info,
+                diagnostic_context=self.state.diagnostic_context,
+                model_adapter=self._model_adapter,
+            )
 
         self.state.diagnosis = diagnosis
 
@@ -467,14 +466,15 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        self._console.print("[info]生成修复建议...[/info]")
-        self._console.print("[dim]  LLM 推理中，纯 CPU 模式下可能需要 1-3 分钟，请耐心等待...[/dim]")
-
-        proposal = generate(
-            diagnosis=self.state.diagnosis,
-            env_info=self.state.env_info,
-            model_adapter=self._model_adapter,
-        )
+        with self._console.status(
+            "[info]生成修复建议... LLM 推理中，纯 CPU 模式下可能需要 1-3 分钟[/info]",
+            spinner="dots",
+        ):
+            proposal = generate(
+                diagnosis=self.state.diagnosis,
+                env_info=self.state.env_info,
+                model_adapter=self._model_adapter,
+            )
 
         self.state.fix = proposal
 
@@ -490,10 +490,21 @@ class WorkflowEngine:
 
         display.print_fix_proposal(proposal)
 
-        # 逐步模式下允许编辑参数
+        # 占位符自动编辑：有未替换占位符时，直接引导用户填写
+        has_unresolved = any(cmd.editable_params for cmd in proposal.commands)
+        if has_unresolved:
+            from galaxy_diag.fixer.template import is_fully_resolved
+            unresolved_cmds = [cmd for cmd in proposal.commands if not is_fully_resolved(cmd)]
+            if unresolved_cmds:
+                self._console.print(
+                    f"\n[warning]⚠ 检测到 {len(unresolved_cmds)} 条命令含未替换的占位符，请填写实际值[/warning]"
+                )
+                self._edit_fix_params(proposal)
+
+        # 逐步模式下允许再次编辑参数
         if not self.auto and proposal.commands:
             has_editable = any(cmd.editable_params for cmd in proposal.commands)
-            if has_editable and interact.confirm("是否编辑修复参数?", default=False):
+            if has_editable and interact.confirm("是否再次编辑修复参数?", default=False):
                 self._edit_fix_params(proposal)
 
         # 逐步模式：PLANNING 后等待用户确认继续
@@ -602,29 +613,43 @@ class WorkflowEngine:
             for note in proposal.risk_notes:
                 self._console.print(f"  - {note}")
 
-        # 三选一交互
-        self._console.print("\n请选择操作:")
-        self._console.print("  [success]y[/success] - 确认执行")
-        self._console.print("  [danger]n[/danger] - 拒绝（终止工作流）")
-        self._console.print("  [info]e[/info] - 编辑参数后重新检测")
+        # 交互式操作菜单（支持编辑参数、删除步骤、重排步骤）
+        while True:
+            self._console.print("\n请选择操作:")
+            self._console.print("  [success]y[/success] - 确认执行")
+            self._console.print("  [danger]n[/danger] - 拒绝（终止工作流）")
+            self._console.print("  [info]e[/info] - 编辑参数")
+            self._console.print("  [info]d[/info] - 删除步骤")
+            self._console.print("  [info]r[/info] - 重排步骤顺序")
 
-        try:
-            choice = input("请输入 (y/n/e): ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            # 中断不是拒绝：保留当前状态，用户可 resume 继续
-            raise
+            try:
+                choice = input("请输入 (y/n/e/d/r): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                raise
 
-        if choice in ("y", "yes"):
-            self._transition(WorkflowStep.EXECUTION_GUARD)
-        elif choice in ("e", "edit"):
-            # 编辑参数后重走安全检测（D-03: 编辑后内容重新检测）
-            if proposal.commands:
-                self._edit_fix_params(proposal)
-            self._transition(WorkflowStep.SECURITY_CHECKING)
-        else:
-            # 拒绝：不执行且不反复要求确认
-            self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
-            self._mark_rejected()
+            if choice in ("y", "yes"):
+                self._transition(WorkflowStep.EXECUTION_GUARD)
+                return
+            elif choice in ("n", "no"):
+                self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
+                self._mark_rejected()
+                return
+            elif choice in ("e", "edit"):
+                if proposal.commands:
+                    self._edit_fix_params(proposal)
+                # 编辑后重走安全检测
+                self._transition(WorkflowStep.SECURITY_CHECKING)
+                return
+            elif choice in ("d", "delete"):
+                self._edit_delete_step(proposal)
+                # 删除步骤后重新展示
+                display.print_fix_proposal(proposal)
+            elif choice in ("r", "reorder"):
+                self._edit_reorder_steps(proposal)
+                # 重排后重新展示
+                display.print_fix_proposal(proposal)
+            else:
+                self._console.print("[dim]无效输入，请重新选择[/dim]")
 
     def _do_execution_guard(self) -> None:
         """EXECUTION_GUARD: E-02 执行前熔断
@@ -780,7 +805,9 @@ class WorkflowEngine:
         """交互式编辑修复参数
 
         使用 template.apply_param_values 替换占位符，返回新的 CommandTemplate（不修改原对象）。
+        编辑参数后重新生成脚本（脚本中的占位符也需同步替换）。
         """
+        from galaxy_diag.fixer.generator import generate_script
         from galaxy_diag.fixer.template import apply_param_values
 
         updated_commands = []
@@ -796,8 +823,122 @@ class WorkflowEngine:
                 updated_commands.append(cmd)
         proposal.commands = updated_commands
 
+        # 重新生成脚本（命令参数已替换，脚本需同步更新）
+        self._regenerate_script(proposal)
+
         # 编辑后重新展示
         display.print_fix_proposal(proposal)
+
+    def _regenerate_script(self, proposal: FixProposal) -> None:
+        """基于当前 commands 重新生成脚本
+
+        当 commands 被编辑（参数替换/删除步骤/重排步骤）后，
+        需要重新生成脚本以保持同步。
+        """
+        from galaxy_diag.fixer.generator import generate_script
+
+        non_verify_cmds = [c for c in proposal.commands if not c.is_verification]
+        if len(non_verify_cmds) >= 2:
+            proposal.script = generate_script(
+                commands=non_verify_cmds,
+                language=proposal.script_language or "bash",
+                root_cause=self.state.diagnosis.root_cause if self.state.diagnosis else "",
+            )
+        else:
+            # 少于 2 个非验证步骤，不需要脚本
+            proposal.script = None
+            proposal.script_language = None
+
+    def _edit_delete_step(self, proposal: FixProposal) -> None:
+        """交互式删除修复步骤
+
+        对应 REQ-D-01 "可编辑"：用户可删除不适用的步骤。
+        """
+        from galaxy_diag.fixer.template import remove_step
+
+        if not proposal.commands:
+            self._console.print("[dim]没有可删除的步骤[/dim]")
+            return
+
+        # 展示当前步骤
+        self._console.print("\n[heading]当前步骤:[/heading]")
+        for i, cmd in enumerate(proposal.commands, 1):
+            verify_tag = " [验证]" if cmd.is_verification else ""
+            self._console.print(f"  {i}. [info]{cmd.command}[/info]{verify_tag} - {cmd.description}")
+
+        try:
+            raw = input("请输入要删除的步骤编号（1-{}），0 取消: ".format(len(proposal.commands))).strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        try:
+            index = int(raw)
+        except ValueError:
+            self._console.print("[dim]无效输入[/dim]")
+            return
+
+        if index == 0:
+            self._console.print("[dim]已取消[/dim]")
+            return
+
+        if index < 1 or index > len(proposal.commands):
+            self._console.print(f"[dim]步骤编号 {index} 越界[/dim]")
+            return
+
+        # 确认删除
+        deleted_cmd = proposal.commands[index - 1]
+        if not interact.confirm(f"确认删除步骤 {index}: {deleted_cmd.description}?", default=False):
+            self._console.print("[dim]已取消[/dim]")
+            return
+
+        proposal.commands = remove_step(proposal.commands, index - 1)
+        # 删除步骤后重新生成脚本
+        self._regenerate_script(proposal)
+        self._console.print(f"[success]✓ 已删除步骤 {index}[/success]")
+
+    def _edit_reorder_steps(self, proposal: FixProposal) -> None:
+        """交互式重排修复步骤顺序
+
+        对应 REQ-D-01 "可编辑"：用户可修改步骤执行顺序。
+        """
+        from galaxy_diag.fixer.template import reorder_steps
+
+        if len(proposal.commands) < 2:
+            self._console.print("[dim]少于 2 个步骤，无需重排[/dim]")
+            return
+
+        # 展示当前步骤
+        self._console.print("\n[heading]当前步骤顺序:[/heading]")
+        for i, cmd in enumerate(proposal.commands, 1):
+            verify_tag = " [验证]" if cmd.is_verification else ""
+            self._console.print(f"  {i}. [info]{cmd.command}[/info]{verify_tag} - {cmd.description}")
+
+        self._console.print("\n请输入新的步骤顺序（如原 1,2,3 改为 3,1,2 表示先执行原第3步）")
+        try:
+            raw = input("新顺序（0 取消）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if raw.strip() == "0":
+            self._console.print("[dim]已取消[/dim]")
+            return
+
+        try:
+            new_order = [int(x.strip()) - 1 for x in raw.split(",")]
+        except ValueError:
+            self._console.print("[dim]无效输入，请使用逗号分隔的数字（如 3,1,2）[/dim]")
+            return
+
+        if sorted(new_order) != list(range(len(proposal.commands))):
+            self._console.print(
+                f"[dim]无效排列，需要包含 1-{len(proposal.commands)} 的所有数字[/dim]"
+            )
+            return
+
+        proposal.commands = reorder_steps(proposal.commands, new_order)
+        # 重排后重新生成脚本
+        self._regenerate_script(proposal)
+        self._console.print("[success]✓ 步骤顺序已更新[/success]")
 
     # ===== Stub 回调（mock 数据，业务模块实现后替换） =====
 

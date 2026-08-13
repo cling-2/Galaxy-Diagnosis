@@ -8,7 +8,15 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
+
+# 抑制 Ollama 推理服务低级别日志输出到终端
+# 这些日志（如 "slot Ursine operator" "disabling mmap"）来自 Ollama 服务端进程，
+# 与工具输出混在一起会干扰用户阅读。
+# 注意：此环境变量仅对新启动的 Ollama 进程生效；对已运行的服务需重启。
+if not os.environ.get("OLLAMA_LOG_LEVEL"):
+    os.environ["OLLAMA_LOG_LEVEL"] = "ERROR"
 
 from galaxy_diag.workflow.cli.display import get_console, init_console, print_header
 

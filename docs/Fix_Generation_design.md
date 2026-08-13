@@ -1495,18 +1495,38 @@ def _do_security_checking(self) -> None:
     self._transition(WorkflowStep.REVIEWING)
 ```
 
-### engine.py _do_reviewing 编辑路径修订
+### engine.py _do_reviewing 交互式操作菜单修订
 
-当前 REVIEWING 中 edit 分支回到 PLANNING 重新生成，但编辑只是改参数，不应该重新生成。修订为回到 SECURITY_CHECKING 重走 D-03 检测：
+REVIEWING 步骤支持五项操作（y/n/e/d/r），循环交互直到用户确认或拒绝：
 
 ```python
-# engine.py _do_reviewing 中 edit 分支
-elif choice in ("e", "edit"):
-    if proposal.commands:
+# engine.py _do_reviewing 操作菜单
+while True:
+    # y - 确认执行 → EXECUTION_GUARD
+    # n - 拒绝 → 终止工作流
+    # e - 编辑参数 → SECURITY_CHECKING（重走 D-03）
+    # d - 删除步骤 → 重新展示，继续选择
+    # r - 重排步骤 → 重新展示，继续选择
+
+    if choice in ("y", "yes"):
+        self._transition(WorkflowStep.EXECUTION_GUARD)
+        return
+    elif choice in ("e", "edit"):
         self._edit_fix_params(proposal)
-    # 编辑后重走安全检测（D-03: 编辑后内容重新检测）
-    self._transition(WorkflowStep.SECURITY_CHECKING)
+        self._transition(WorkflowStep.SECURITY_CHECKING)
+        return
+    elif choice in ("d", "delete"):
+        self._edit_delete_step(proposal)    # template.remove_step()
+        display.print_fix_proposal(proposal)  # 重新展示
+    elif choice in ("r", "reorder"):
+        self._edit_reorder_steps(proposal)  # template.reorder_steps()
+        display.print_fix_proposal(proposal)  # 重新展示
 ```
+
+**设计要点**：
+- `e`（编辑参数）和 `d`/`r`（删除/重排）是不同性质的操作：编辑参数可能引入新的占位符问题，需要重走 D-03；删除/重排只是调整步骤结构，不引入新的占位符，修改后留在 REVIEWING 继续选择
+- 删除步骤前需确认（`interact.confirm`），防止误删
+- 重排步骤需校验排列合法性（包含 1~N 的所有数字）
 
 ## 纵深防御全景
 
@@ -1568,7 +1588,7 @@ PLANNING 是纯生成步骤，**不执行任何写操作**：
 | 验收标准（任务书） | 本设计落点 |
 |------------------|-----------|
 | **D-01-1** 修复命令模板化，关键参数用占位符标识 | §占位符模板引擎：`<UPPER_CASE>` 占位符 + `editable_params` |
-| **D-01-2** 占位符可在人工审核阶段编辑 | §参数编辑：`apply_param_values()` + interact.py 交互 |
+| **D-01-2** 占位符可在人工审核阶段编辑 | §参数编辑：`apply_param_values()` + interact.py 交互 + PLANNING 阶段占位符自动引导编辑 |
 | **D-01-3** 编辑后可重新检测 | REVIEWING → edit → SECURITY_CHECKING 重走 D-03 |
 | **D-01-4** 每条建议附带安全风险提示 | §System Prompt 规则 2 + postprocess 语义校验 rule 4 |
 | **D-01-5** 验证步骤标记为只读 | §语义校验 rule 5 + `is_verification` 字段 |
