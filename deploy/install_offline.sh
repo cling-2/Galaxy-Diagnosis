@@ -170,6 +170,25 @@ SVCEOF
 fi
 
 # ---------- 2. 导入模型 ----------
+# 确保 Ollama 服务正在运行（Docker 每次新容器进程不保留，需重新启动）     
+if ! curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+    echo "    Ollama 服务未运行，正在启动..."                             
+    OLLAMA_HOST=127.0.0.1:11434 \                                         
+    OLLAMA_FLASH_ATTENTION=1 \                                            
+    OLLAMA_KEEP_ALIVE=30m \                                               
+    OLLAMA_NUM_PARALLEL=1 \                                               
+    /usr/local/bin/ollama serve &                                         
+    OLLAMA_PID=$!                                                         
+    sleep 2                                                               
+    if kill -0 "$OLLAMA_PID" 2>/dev/null; then                            
+        ok "Ollama 已启动 (PID=$OLLAMA_PID)"                              
+    else                                                                  
+        fail "Ollama 启动失败"                                            
+        exit 1                                                            
+    fi                                                                    
+else                                                                      
+    ok "Ollama 服务已运行"                                                
+fi
 echo ""
 echo "==> [2/3] 导入模型..."
 

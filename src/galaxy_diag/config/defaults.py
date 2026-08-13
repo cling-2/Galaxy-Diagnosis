@@ -11,6 +11,7 @@ class LLMConfig:
     api_key: str = "ollama"
     timeout: int = 120
     max_retries: int = 3
+    max_tokens: int = 1024                  # 默认最大输出 token 数，防止无限生成
 
 
 @dataclass

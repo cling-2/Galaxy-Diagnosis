@@ -7,6 +7,7 @@ llm:
   api_key: "ollama"                        # Ollama 不需要真实 key，OpenAI SDK 要求非空
   timeout: 600    # 纯 CPU 推理 8B 模型需 3-5 分钟，留足余量
   max_retries: 3
+  max_tokens: 1024                          # 最大输出 token 数，防止无限生成
 
 hardware:
   min_cpu_cores: 4

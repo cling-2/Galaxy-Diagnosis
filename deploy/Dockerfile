@@ -5,7 +5,7 @@
 #
 # 用法：
 #   docker build -t galaxy-diag-test -f deploy/Dockerfile .
-#   docker run --rm -it -v "$(pwd):/opt/galaxy-diag" --memory=8g --cpus=4 galaxy-diag-test
+#   docker run --rm -it -v "${PWD}:/opt/galaxy-diag" --memory=12g --memory-swap=12g --cpus=6  --shm-size=1g galaxy-diag-test
 #   # 容器内：bash deploy/install_offline.sh && source venv/bin/activate && galaxy-diag
 
 FROM python:3.10-slim

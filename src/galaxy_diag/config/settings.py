@@ -23,6 +23,7 @@ _ENV_MAPPING: dict[str, tuple[str, str]] = {
     "GALAXY_LLM_API_KEY": ("llm", "api_key"),
     "GALAXY_LLM_TIMEOUT": ("llm", "timeout"),
     "GALAXY_LLM_MAX_RETRIES": ("llm", "max_retries"),
+    "GALAXY_LLM_MAX_TOKENS": ("llm", "max_tokens"),
     "GALAXY_HW_MIN_CPU_CORES": ("hardware", "min_cpu_cores"),
     "GALAXY_HW_MIN_RAM_GB": ("hardware", "min_ram_gb"),
     "GALAXY_HW_MIN_GPU_VRAM_GB": ("hardware", "min_gpu_vram_gb"),
@@ -39,6 +40,7 @@ def _parse_bool(value: str) -> bool:
 _TYPE_COERCIONS: dict[tuple[str, str], type] = {
     ("llm", "timeout"): int,
     ("llm", "max_retries"): int,
+    ("llm", "max_tokens"): int,
     ("hardware", "min_cpu_cores"): int,
     ("hardware", "min_ram_gb"): float,
     ("hardware", "min_gpu_vram_gb"): float,
@@ -47,11 +49,21 @@ _TYPE_COERCIONS: dict[tuple[str, str], type] = {
 }
 
 
-def load_config(config_path: str = "config.yaml") -> AppConfig:
+def load_config(config_path: str | None = None) -> AppConfig:
     """加载配置：YAML → 环境变量覆盖 → 默认值
 
+    配置文件路径确定优先级：
+      1. 显式传入的 config_path 参数（如 CLI --config）
+      2. 环境变量 GALAXY_CONFIG_FILE（便于测试环境无缝切换）
+      3. 默认值 "config.yaml"（生产配置）
+
+    加载优先级：
+      1. YAML 配置文件
+      2. 环境变量覆盖（前缀 GALAXY_，如 GALAXY_LLM_BASE_URL）
+      3. 代码默认值（defaults.py 中的 dataclass 默认值）
+
     Args:
-        config_path: YAML 配置文件路径
+        config_path: YAML 配置文件路径；为 None 时按上述优先级确定
 
     Returns:
         AppConfig 实例
@@ -59,6 +71,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     Raises:
         ConfigError: 配置文件格式错误或缺少必填字段
     """
+    # 确定配置文件路径：显式参数 > 环境变量 GALAXY_CONFIG_FILE > 默认 config.yaml
+    if config_path is None:
+        config_path = os.environ.get("GALAXY_CONFIG_FILE", "config.yaml")
     # 1. 从 YAML 文件加载（文件不存在则使用默认值）
     raw: dict[str, Any] = {}
     if os.path.exists(config_path):

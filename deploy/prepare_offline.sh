@@ -80,12 +80,24 @@ fi
 echo ""
 echo "==> [3/3] 下载 Python wheel（Docker 容器，Linux 平台）..."
 
-if ! command -v docker &>/dev/null; then
+if command -v docker &>/dev/null; then                                             
+    info "使用 Docker 容器下载（确保 Linux 平台匹配）"                             
+    info "使用镜像: $PYTHON_IMAGE"                                                 
+    docker run --rm \                                                              
+        -v "$PROJECT_DIR:/project" \                                               
+        "$PYTHON_IMAGE" \                                                          
+        bash -c "pip download -r /project/requirements.txt -d /project/deploy/offli
+ne/wheels"                                                                         
+elif uname -s | grep -qi linux; then                                               
+    # Docker 不可用但当前已是 Linux：直接 pip download（平台天然匹配）             
+    info "Docker 不可用，但当前为 Linux 环境，直接 pip download"                   
+    pip3 download -r "$REQ_FILE" -d "$OFFLINE_DIR/wheels"                          
+else
     echo ""
-    echo "    ⚠ Docker 不可用！"
+    echo "    ⚠ Docker 不可用且非 Linux 环境！"
     echo "    Python wheel 必须在 Linux 环境下载以保证平台匹配。"
     echo "    请安装 Docker Desktop，或在任意 Linux 机器上执行："
-    echo "      python3 -m pip download -r requirements.txt -d deploy/offline/wheels"
+    echo "      pip3 download -r requirements.txt -d deploy/offline/wheels" 
     exit 1
 fi
 
