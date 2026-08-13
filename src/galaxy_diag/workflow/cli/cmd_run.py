@@ -51,6 +51,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="清理所有未完成会话后再启动新工作流",
     )
+    sub.add_argument(
+        "--mock",
+        action="store_true",
+        help="Mock 模式：使用预设响应，不连接真实 LLM（用于开发测试和流程验证）",
+    )
     sub.set_defaults(callback=handle)
 
 
@@ -94,6 +99,7 @@ def handle(args: argparse.Namespace) -> None:
 
     verbose = getattr(args, "verbose", False)
     user_log_files = getattr(args, "log_files", None) or []
+    mock_mode = getattr(args, "mock", False)
 
     try:
         # --clean: 清理未完成会话后退出
@@ -121,6 +127,7 @@ def handle(args: argparse.Namespace) -> None:
                 auto=args.auto,
                 verbose=verbose,
                 user_log_files=user_log_files,
+                mock=mock_mode,
             )
 
         else:
@@ -128,6 +135,7 @@ def handle(args: argparse.Namespace) -> None:
             engine = WorkflowEngine.find_and_prompt_resume(
                 auto=args.auto,
                 verbose=verbose,
+                mock=mock_mode,
             )
 
             if engine is None:
@@ -147,10 +155,14 @@ def handle(args: argparse.Namespace) -> None:
                     auto=args.auto,
                     verbose=verbose,
                     user_log_files=user_log_files,
+                    mock=mock_mode,
                 )
                 console.print(f"[info]会话已创建: {engine.state.session_id}[/info]")
+                mode_parts = ["自动" if args.auto else "逐步"]
+                if mock_mode:
+                    mode_parts.append("Mock")
                 console.print(
-                    f"[dim]模式: {'自动' if args.auto else '逐步'} | "
+                    f"[dim]模式: {' | '.join(mode_parts)} | "
                     f"可随时 Ctrl+C 中断，使用 --resume 恢复[/dim]\n"
                 )
 

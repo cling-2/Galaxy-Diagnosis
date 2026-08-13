@@ -123,6 +123,7 @@ class WorkflowEngine:
         auto: bool = False,
         verbose: bool = False,
         user_log_files: list[str] | None = None,
+        mock: bool = False,
     ):
         """
         Args:
@@ -130,19 +131,27 @@ class WorkflowEngine:
             auto: 自动模式（中间步骤只展示不暂停，REVIEWING 仍需人工）
             verbose: 详细输出
             user_log_files: 用户上传的日志文件路径（被动接收，--log-file）
+            mock: Mock 模式（使用预设响应，不连接真实 LLM，用于测试）
         """
         self.state = state
         self.auto = auto
         self.verbose = verbose
+        self.mock = mock
         self._user_log_files = user_log_files or []
         self._console = display.get_console()
 
         # 初始化 ModelAdapter（延迟导入避免循环依赖）
-        from galaxy_diag.config.settings import load_config
-        from galaxy_diag.model.client import ModelAdapter
+        if mock:
+            from galaxy_diag.model.mock_client import MockModelAdapter
 
-        config = load_config()
-        self._model_adapter = ModelAdapter(config.llm)
+            self._model_adapter = MockModelAdapter()
+            self._console.print("[dim]  [Mock 模式] 使用预设响应，不连接真实推理服务[/dim]")
+        else:
+            from galaxy_diag.config.settings import load_config
+            from galaxy_diag.model.client import ModelAdapter
+
+            config = load_config()
+            self._model_adapter = ModelAdapter(config.llm)
 
     # ===== 公开接口 =====
 
@@ -206,6 +215,7 @@ class WorkflowEngine:
         auto: bool = False,
         verbose: bool = False,
         user_log_files: list[str] | None = None,
+        mock: bool = False,
     ) -> WorkflowEngine:
         """创建新工作流
 
@@ -214,6 +224,7 @@ class WorkflowEngine:
             auto: 自动模式
             verbose: 详细输出
             user_log_files: 用户上传的日志文件路径（--log-file）
+            mock: Mock 模式（使用预设响应，不连接真实 LLM）
 
         Returns:
             初始化后的 WorkflowEngine
@@ -223,7 +234,7 @@ class WorkflowEngine:
             current_step=WorkflowStep.ENV_RECOGNISING,
             problem_description=problem_description,
         )
-        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files)
+        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files, mock=mock)
         engine._save()
         return engine
 
@@ -235,6 +246,7 @@ class WorkflowEngine:
         auto: bool = False,
         verbose: bool = False,
         user_log_files: list[str] | None = None,
+        mock: bool = False,
     ) -> WorkflowEngine:
         """恢复已有工作流
 
@@ -257,7 +269,7 @@ class WorkflowEngine:
                 hint="已完成/已拒绝/已回滚的会话无法恢复，请启动新工作流",
             )
 
-        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files)
+        engine = cls(state, auto=auto, verbose=verbose, user_log_files=user_log_files, mock=mock)
         engine._console.print(
             f"[info]恢复会话: {session_id}[/info] "
             f"(当前步骤: {STEP_LABELS.get(state.current_step, state.current_step.value)})"
@@ -270,6 +282,7 @@ class WorkflowEngine:
         *,
         auto: bool = False,
         verbose: bool = False,
+        mock: bool = False,
     ) -> WorkflowEngine | None:
         """查找未完成会话并提示用户是否恢复
 
@@ -289,7 +302,7 @@ class WorkflowEngine:
 
         if interact.confirm("是否恢复最近的会话?", default=True):
             latest = resumable[-1]
-            return cls.resume(latest.session_id, auto=auto, verbose=verbose)
+            return cls.resume(latest.session_id, auto=auto, verbose=verbose, mock=mock)
 
         return None
 

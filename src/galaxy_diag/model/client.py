@@ -62,6 +62,9 @@ class ModelAdapter:
             ModelCallError: 模型调用失败
         """
         try:
+            # 调用方未显式指定 max_tokens 时，使用配置默认值（防止无限生成，加速推理）
+            if "max_tokens" not in kwargs and self.config.max_tokens > 0:
+                kwargs["max_tokens"] = self.config.max_tokens
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
@@ -88,6 +91,8 @@ class ModelAdapter:
             ModelCallError: 模型调用失败
         """
         try:
+            if "max_tokens" not in kwargs and self.config.max_tokens > 0:
+                kwargs["max_tokens"] = self.config.max_tokens
             stream = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
@@ -124,6 +129,8 @@ class ModelAdapter:
             ModelCallError: 模型调用失败
         """
         try:
+            if "max_tokens" not in kwargs and self.config.max_tokens > 0:
+                kwargs["max_tokens"] = self.config.max_tokens
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
