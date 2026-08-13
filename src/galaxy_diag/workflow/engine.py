@@ -382,17 +382,6 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        # 检查回退次数上限
-        retry_count = sum(
-            1 for h in self.state.history
-            if h.get("from") == "diagnosing" and h.get("to") == "collecting"
-        )
-        if retry_count >= MAX_DIAGNOSING_RETRIES:
-            self._console.print(
-                f"[warning]已回退补充采集 {retry_count} 次，"
-                f"基于当前信息继续分析[/warning]"
-            )
-
         with self._console.status(
             "[info]分析故障根因... LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟[/info]",
             spinner="dots",
@@ -419,8 +408,33 @@ class WorkflowEngine:
         display.print_diagnosis(diagnosis)
         self._save()
 
+        # ── LLM 不可用时直接终止，不回退补充采集（否则死循环）──
+        if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
+            self._console.print(
+                "\n[error]✗ LLM 推理服务不可用，无法完成根因分析。[/error]"
+            )
+            self._console.print(
+                "[dim]  请修复推理服务后使用 galaxy-diag run --resume 恢复[/dim]"
+            )
+            self._mark_done("LLM 推理服务不可用")
+            return
+
         # 分支判断
         if diagnosis.confidence == Confidence.INSUFFICIENT:
+            # 检查回退次数上限（防止 LLM 反复返回 insufficient 死循环）
+            retry_count = sum(
+                1 for h in self.state.history
+                if h.get("step") == WorkflowStep.COLLECTING.value
+                and h.get("result") == "entered"
+            )
+            if retry_count >= MAX_DIAGNOSING_RETRIES:
+                self._console.print(
+                    f"[warning]已回退补充采集 {retry_count} 次，"
+                    f"基于当前信息继续分析[/warning]"
+                )
+                self._transition(WorkflowStep.PLANNING)
+                return
+
             # 信息不足，回退到 COLLECTING 补充采集
             self._console.print("\n[warning]⚠ 信息不足，需要补充采集[/warning]")
             if not self.auto:
