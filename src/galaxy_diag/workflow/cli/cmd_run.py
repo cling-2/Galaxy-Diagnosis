@@ -1,7 +1,10 @@
 """galaxy-diag run — 端到端工作流
 
 对应需求: REQ-F-02
-通过 WorkflowEngine 编排：环境识别 → 信息采集 → 根因分析 → 修复建议 → 安全检测 → 人工审核 → 执行 → 验证
+通过 WorkflowEngine 编排：
+  用户可见 7 步：环境识别 → 信息收集 → 根因分析 → 修复建议 → 人工审核 → 执行 → 结果验证
+  内部状态机 10 步：ENV_RECOGNISING → COLLECTING → DIAGNOSING → PLANNING →
+                    SECURITY_CHECKING → EXECUTION_GUARD → REVIEWING → SNAPSHOT → EXECUTING → VERIFYING
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     sub = subparsers.add_parser(
         "run",
         help="端到端工作流 (REQ-F-02)",
-        description="完整诊断-修复流程编排: 采集 → 识别 → 分析 → 修复 → 审核 → 执行 → 验证",
+        description="完整诊断-修复流程编排: 环境识别 → 信息收集 → 根因分析 → 修复建议 → 人工审核 → 执行 → 结果验证",
     )
     sub.add_argument(
         "--description", "-d",

@@ -4,7 +4,14 @@
 
 定义诊断-修复端到端工作流的状态机框架，使各模块能力串联为完整闭环：
 
-**环境识别 → 信息采集 → 根因分析 → 修复建议 → 安全检测 → 人工审核 → 执行 → 结果验证**
+**用户可见步骤（7 步）：环境识别 → 信息收集 → 根因分析 → 修复建议 → 人工审核 → 执行 → 结果验证**
+
+**内部状态机（10 步）：ENV_RECOGNISING → COLLECTING → DIAGNOSING → PLANNING → SECURITY_CHECKING → EXECUTION_GUARD → REVIEWING → SNAPSHOT → EXECUTING → VERIFYING**
+
+内部状态与用户可见步骤的映射关系：
+- 步骤 4「修复建议」= PLANNING + SECURITY_CHECKING（生成后检测在建议生成后自动执行，在该步骤末尾显示安全性提示）
+- 步骤 5「人工审核」= EXECUTION_GUARD + REVIEWING（执行前熔断在审核前进行安全性评估，危险操作需输入 CONFIRM 确认）
+- 步骤 6「执行」= SNAPSHOT + EXECUTING（审核同意后自动创建快照，显示"正在创建快照"提示，然后执行修复）
 
 对应 REQ-F-02 四项验收标准：
 
@@ -58,7 +65,7 @@
                           |
                           v
                   ENV_RECOGNISING
-                   (环境感知)
+                   (环境识别)
                           |
                           v
                      COLLECTING
@@ -82,35 +89,40 @@
                    v
             SECURITY_CHECKING
             (D-03: 生成后检测)
+            ┈┈┈ 归属用户步骤 4/7「修复建议」┈┈┈
                    |
             ┌──────┴──────┐
             |             |
            pass          fail
             |             |
             v             v
-        REVIEWING     回到 PLANNING
-       (人工审核)     (代码质量问题，重新生成)
+     EXECUTION_GUARD  回到 PLANNING
+      (E-02: 执行前熔断) (CRITICAL：代码质量问题，重新生成)
+      ┈┈┈ 归属用户步骤 5/7「人工审核」┈┈┈
             |
-      ┌─────┼─────┐
-      |     |     |
-     yes    n   edit
-      |     |     |
-      v     v     v
-  EXECUTION_GUARD  终止  SECURITY_CHECKING
-   (E-02: 执行前熔断)     (编辑后重走 D-03)
-      |
-  ┌───┼───────────────┐
-  |   |               |
- pass WARNING       CRITICAL
-  |   |               |
-  v   v               v
-SNAPSHOT 回到           终止
-(创建快照) REVIEWING      (强制拦截，不可绕过)
-  |        (额外确认
-  |         CONFIRM)
+        ┌───┼───────────────┐
+        |   |               |
+      pass WARNING       CRITICAL
+        |   |               |
+        v   v               v
+    REVIEWING 进入           终止
+    (人工审核) REVIEWING     (强制拦截，不可绕过)
+    ┈┈┈ 归属用户步骤 5/7「人工审核」┈┈┈
+        |     (WARNING/CRITICAL 时
+        |      要求输入 CONFIRM 确认)
+  ┌─────┼─────┐
+  |     |     |
+ yes    n   edit
+  |     |     |
+  v     v     v
+SNAPSHOT 终止  SECURITY_CHECKING
+(创建快照)     (编辑后重走 D-03)
+┈┈┈ 归属用户步骤 6/7「执行」┈┈┈
+  |
   v
 EXECUTING
  (执行修复)
+ ┈┈┈ 归属用户步骤 6/7「执行」┈┈┈
    |
   ┌──┴──┐
   |     |
@@ -119,77 +131,97 @@ EXECUTING
   v     v
 VERIFYING  回滚(从快照恢复) → 终止
  (结果验证)
+ ┈┈┈ 归属用户步骤 7/7「结果验证」┈┈┈
    |
    v
   DONE
 ```
 
-### 2.2 状态定义
+### 2.2 用户可见步骤与内部状态映射
 
-| 状态 | 说明 | 输入 | 输出 | 对应模块 |
-|------|------|------|------|---------|
-| START | 任务开始 | 用户问题描述 | session_id | workflow |
-| ENV_RECOGNISING | 识别运行环境类型 | 系统特征 | 环境类型 (VM/容器/裸机) + 软硬件信息 | collector |
-| COLLECTING | 采集诊断信息 | 环境信息 + 用户描述 | 结构化诊断上下文 | collector |
-| DIAGNOSING | 根因分析 | 诊断上下文 + 环境信息 | DiagnosisResult (root_cause + confidence) | diagnoser |
-| PLANNING | 生成修复建议 | DiagnosisResult | FixProposal (命令/脚本，尚未检测) | fixer |
-| SECURITY_CHECKING | 生成后检测 (D-03) | FixProposal | 检测结果 (pass/fail + warnings) | fixer.checker |
-| REVIEWING | 人工审核 | FixProposal + 检测结果 | yes / no / edit | safety.review + workflow/cli |
-| EXECUTION_GUARD | 执行前熔断 (E-02) | 审核通过的 FixProposal | 熔断结果 (pass/blocked/需额外确认) | safety.danger |
-| SNAPSHOT | 创建恢复快照 | 熔断通过的 FixProposal | SnapshotMeta | safety.snapshot |
-| EXECUTING | 执行修复 | FixProposal | 执行日志 | safety (受控执行) |
-| VERIFYING | 结果验证 | 执行结果 | 恢复状态 | diagnoser (验证) |
-| DONE | 完成 | — | — | — |
+用户在 CLI 中看到的始终是 7 步流程，内部 10 个状态自动映射：
 
-### 2.3 状态转换规则
+| 用户步骤 | 用户可见标签 | 内部状态 | 说明 |
+|---------|------------|---------|------|
+| 1/7 | 环境识别 | ENV_RECOGNISING | 直接对应 |
+| 2/7 | 信息收集 | COLLECTING | 直接对应 |
+| 3/7 | 根因分析 | DIAGNOSING | 直接对应 |
+| 4/7 | 修复建议 | PLANNING → SECURITY_CHECKING | 生成后检测在建议末尾自动执行，显示安全性提示；CRITICAL 时回退重新生成，用户始终停留在「修复建议」步骤 |
+| 5/7 | 人工审核 | EXECUTION_GUARD → REVIEWING | 执行前熔断先于审核执行；危险操作（WARNING/CRITICAL）要求输入 CONFIRM 全称确认 |
+| 6/7 | 执行 | SNAPSHOT → EXECUTING | 审核同意后自动创建快照（显示「正在创建快照」提示），然后执行修复 |
+| 7/7 | 结果验证 | VERIFYING | 直接对应 |
+
+**步骤标题打印规则**：仅在用户可见步骤**切换**时打印步骤标题（如 `━━━ 步骤 4/7: 修复建议 ━━━`），同一用户步骤内的内部子状态切换不重复打印。
+
+### 2.3 状态定义
+
+| 状态 | 说明 | 输入 | 输出 | 对应模块 | 用户可见步骤 |
+|------|------|------|------|---------|------------|
+| START | 任务开始 | 用户问题描述 | session_id | workflow | — |
+| ENV_RECOGNISING | 识别运行环境类型 | 系统特征 | 环境类型 (VM/容器/裸机) + 软硬件信息 | collector | 1/7 环境识别 |
+| COLLECTING | 采集诊断信息 | 环境信息 + 用户描述 | 结构化诊断上下文 | collector | 2/7 信息收集 |
+| DIAGNOSING | 根因分析 | 诊断上下文 + 环境信息 | DiagnosisResult (root_cause + confidence) | diagnoser | 3/7 根因分析 |
+| PLANNING | 生成修复建议 | DiagnosisResult | FixProposal (命令/脚本，尚未检测) | fixer | 4/7 修复建议 |
+| SECURITY_CHECKING | 生成后检测 (D-03) | FixProposal | 检测结果 (pass/fail + warnings) | fixer.checker | 4/7 修复建议（隐藏子步骤） |
+| EXECUTION_GUARD | 执行前熔断 (E-02) | FixProposal | 熔断结果 (pass/blocked/需额外确认) | safety.danger | 5/7 人工审核（隐藏子步骤） |
+| REVIEWING | 人工审核 | FixProposal + 熔断结果 | yes / no / edit | safety.review + workflow/cli | 5/7 人工审核 |
+| SNAPSHOT | 创建恢复快照 | 审核通过的 FixProposal | SnapshotMeta | safety.snapshot | 6/7 执行（隐藏子步骤） |
+| EXECUTING | 执行修复 | FixProposal | 执行日志 | safety (受控执行) | 6/7 执行 |
+| VERIFYING | 结果验证 | 执行结果 | 恢复状态 | diagnoser (验证) | 7/7 结果验证 |
+| DONE | 完成 | — | — | — | — |
+
+### 2.4 状态转换规则
 
 | 当前状态 | 下一状态 | 触发条件 | 说明 |
 |---------|---------|---------|------|
 | START | ENV_RECOGNISING | 用户提交问题 | 创建 session，开始流程 |
 | ENV_RECOGNISING | COLLECTING | 环境识别完成 | 识别结果写入 WorkflowState.env_info |
 | COLLECTING | DIAGNOSING | 采集完成且信息充分 | 诊断上下文就绪 |
+| COLLECTING | PLANNING | 已知故障模式短路 | 规则库匹配命中，跳过 DIAGNOSING |
 | DIAGNOSING | PLANNING | confidence = CONFIRMED 或 SUSPECTED | 有足够依据给出修复建议 |
 | DIAGNOSING | COLLECTING | confidence = INSUFFICIENT | 信息不足，回退补充采集 |
-| PLANNING | SECURITY_CHECKING | FixProposal 生成 | 进入生成后检测 |
-| SECURITY_CHECKING | REVIEWING | D-03 通过（无 CRITICAL） | 代码质量合格，展示给用户 |
-| SECURITY_CHECKING | PLANNING | D-03 失败（有 CRITICAL） | 代码质量问题，重新生成 |
-| REVIEWING | EXECUTION_GUARD | 用户确认 yes | 进入执行前熔断 |
-| REVIEWING | SECURITY_CHECKING | 用户编辑 edit | 编辑后重走 D-03 检测 |
+| PLANNING | SECURITY_CHECKING | FixProposal 生成 | 进入生成后检测（用户步骤 4/7 内部） |
+| SECURITY_CHECKING | EXECUTION_GUARD | D-03 通过（无 CRITICAL） | 代码质量合格，进入执行前熔断 |
+| SECURITY_CHECKING | PLANNING | D-03 失败（有 CRITICAL） | 代码质量问题，在修复建议步骤内回退重新生成 |
+| EXECUTION_GUARD | REVIEWING | E-02 通过 | 安全检查合格，进入人工审核 |
+| EXECUTION_GUARD | REVIEWING | E-02 有 WARNING/CRITICAL | 危险操作，进入 REVIEWING 并要求输入 CONFIRM 确认 |
+| REVIEWING | SNAPSHOT | 用户确认 yes | 审核通过，自动创建快照（显示「正在创建快照」提示） |
+| REVIEWING | SECURITY_CHECKING | 用户编辑 edit | 编辑后重走 D-03 检测（回到修复建议步骤内部） |
 | REVIEWING | 终止 | 用户拒绝 no | 不执行，不反复要求确认 |
-| EXECUTION_GUARD | SNAPSHOT | E-02 通过（无 CRITICAL/WARNING） | 安全检查合格，创建快照 |
-| EXECUTION_GUARD | REVIEWING | E-02 有 WARNING | 需用户额外确认（CONFIRM），回到 REVIEWING |
-| EXECUTION_GUARD | 终止 | E-02 有 CRITICAL（强制拦截） | 不可执行，不可绕过 |
 | SNAPSHOT | EXECUTING | 快照创建成功 | 从快照点安全执行 |
 | EXECUTING | VERIFYING | 执行成功 | 验证修复效果 |
 | EXECUTING | 回滚 → 终止 | 执行失败 | 从快照恢复，记录审计日志 |
 | VERIFYING | DONE | 验证通过 | 流程完成 |
 | VERIFYING | DIAGNOSING | 验证失败 | 修复未生效，重新诊断 |
 
-### 2.4 SECURITY_CHECKING 与 EXECUTION_GUARD 的分工
+### 2.5 SECURITY_CHECKING 与 EXECUTION_GUARD 的分工
 
 | 维度 | SECURITY_CHECKING (D-03) | EXECUTION_GUARD (E-02) |
 |------|--------------------------|------------------------|
-| **防护阶段** | 代码生成后、用户确认前 | 用户确认后、实际执行前 |
+| **防护阶段** | 代码生成后、熔断检查前 | 熔断检查后、人工审核前 |
+| **用户可见归属** | 步骤 4/7「修复建议」末尾 | 步骤 5/7「人工审核」开头 |
 | **核心目标** | 确保 LLM 产出的代码正确、可用、无明显隐患 | 防止高风险操作被误执行或恶意执行 |
 | **性质** | 质量保障 | 安全兜底 |
 | **拦截策略** | 建议性：CRITICAL 阻止自动执行，WARNING 允许继续 | 强制性：CRITICAL 强制拦截不可绕过，WARNING 要求额外确认 |
 | **检测深度** | 基于文本的静态匹配（ShellCheck + 正则） | 基于语义的深度预分析（变量展开 + 影响范围评估） |
 | **规则库归属** | 通用代码质量规则，研发/工具链团队维护 | 业务安全策略，安全/SRE 团队维护 |
 | **检测维度** | 语法检查 + 环境兼容性 + 危险模式建议性警告 | 危险命令深度检测 + 变量展开绕过 + 影响范围评估 + 用户编辑风险 |
+| **CRITICAL 处理** | 回退到 PLANNING 重新生成（用户仍在「修复建议」步骤） | 终止工作流或在 REVIEWING 中要求 CONFIRM |
+| **WARNING 处理** | 在修复建议步骤末尾显示安全性提示，允许继续 | 在 REVIEWING 中要求输入 CONFIRM 确认 |
 
 > **纵深防御原则**：D-03 解决"LLM 写得对不对"，E-02 解决"用户该不该执行"。两层缺一不可：用户编辑可能引入新风险（D-03 检测不到）、某些操作在特定环境上下文中才危险（D-03 静态匹配无法感知）、人工确认存在认知盲区需要影响范围评估作为决策依据。
 
-### 2.5 跳过与短路
+### 2.6 跳过与短路
 
 简单问题允许跳过部分步骤，通过 WorkflowState 中已有数据判断：
 
 | 短路场景 | 条件 | 路径 |
 |---------|------|------|
 | 已知故障模式 | 规则库匹配命中 | ENV_RECOGNISING → COLLECTING → 直接 PLANNING（跳过 DIAGNOSING） |
-| 单步修复 | 修复只需一条命令 | PLANNING 可生成单步 FixProposal，SECURITY_CHECKING + REVIEWING 流程不变 |
+| 单步修复 | 修复只需一条命令 | PLANNING 可生成单步 FixProposal，SECURITY_CHECKING + EXECUTION_GUARD + REVIEWING 流程不变 |
 | 只需诊断 | 用户明确表示只看诊断结论 | DIAGNOSING → 输出结论 → DONE（不进入 PLANNING） |
 
-> 短路不是跳过安全检测和审核——SECURITY_CHECKING、REVIEWING、EXECUTION_GUARD 三步是红线，不可跳过。
+> 短路不是跳过安全检测和审核——SECURITY_CHECKING、EXECUTION_GUARD、REVIEWING 三步是红线，不可跳过。
 
 ## 3. WorkflowState 设计
 
@@ -202,11 +234,28 @@ class WorkflowStep(str, Enum):
     DIAGNOSING = "diagnosing"
     PLANNING = "planning"
     SECURITY_CHECKING = "security_checking"    # D-03: 生成后检测
-    REVIEWING = "reviewing"
     EXECUTION_GUARD = "execution_guard"         # E-02: 执行前熔断
+    REVIEWING = "reviewing"
     SNAPSHOT = "snapshot"
     EXECUTING = "executing"
     VERIFYING = "verifying"
+
+# 用户可见步骤总数
+TOTAL_USER_STEPS = 7
+
+# 内部步骤 → 用户可见步骤映射 (step_number, label)
+STEP_TO_USER_STEP: dict[WorkflowStep, tuple[int, str]] = {
+    WorkflowStep.ENV_RECOGNISING: (1, "环境识别"),
+    WorkflowStep.COLLECTING: (2, "信息收集"),
+    WorkflowStep.DIAGNOSING: (3, "根因分析"),
+    WorkflowStep.PLANNING: (4, "修复建议"),
+    WorkflowStep.SECURITY_CHECKING: (4, "修复建议"),   # 生成后检测在修复建议末尾执行
+    WorkflowStep.EXECUTION_GUARD: (5, "人工审核"),      # 执行前熔断在人工审核前执行
+    WorkflowStep.REVIEWING: (5, "人工审核"),             # 人工审核确认
+    WorkflowStep.SNAPSHOT: (6, "执行"),                  # 快照自动创建，归入执行步骤
+    WorkflowStep.EXECUTING: (6, "执行"),
+    WorkflowStep.VERIFYING: (7, "结果验证"),
+}
 
 @dataclass
 class WorkflowState:
@@ -302,7 +351,7 @@ galaxy-diag run
 
 | 模式 | 行为 | 适用场景 |
 |------|------|---------|
-| 逐步模式 (默认) | 每个步骤完成后暂停，展示结果，等待用户确认继续（§5.2 全部介入点生效） | 运维人员需要逐步观察 |
+| 逐步模式 (默认) | 每个用户可见步骤完成后暂停，展示结果，等待用户确认继续（§5.2 全部介入点生效） | 运维人员需要逐步观察 |
 | 自动模式 | 自动推进，中间步骤仅展示结果不暂停，直到 REVIEWING 才等待人工确认（§5.2 仅 REVIEWING 介入点生效） | 快速排查，只需最终确认 |
 
 ```bash
@@ -317,14 +366,24 @@ galaxy-diag run -d "数据磁盘未识别" --auto
 
 ### 5.2 介入点
 
-| 步骤 | 用户可执行操作 | CLI 入口 |
-|------|-------------|---------|
-| COLLECTING 后 | 查看采集结果、补充描述 | 自动展示 + 提示继续 |
-| DIAGNOSING 后 | 查看结论、决定是否继续 | 自动展示 + 确认 |
-| PLANNING 后 | 编辑修复参数 | `--edit` 或交互提示 |
-| SECURITY_CHECKING 后 | 查看检测结果 | 自动展示（D-03 WARNING 提醒） |
-| REVIEWING | 确认 / 拒绝 / 编辑参数 / 删除步骤 / 重排步骤 | y / n / e / d / r |
-| EXECUTION_GUARD | 查看影响范围、额外确认（CONFIRM） | 自动展示 + CONFIRM 输入 |
+| 步骤 | 用户可见步骤 | 用户可执行操作 | CLI 入口 |
+|------|------------|-------------|---------|
+| COLLECTING 后 | 2/7 信息收集 | 查看采集结果、补充描述 | 自动展示 + 提示继续 |
+| DIAGNOSING 后 | 3/7 根因分析 | 查看结论、决定是否继续 | 自动展示 + 确认 |
+| PLANNING 后 | 4/7 修复建议 | 编辑修复参数 | `--edit` 或交互提示 |
+| SECURITY_CHECKING 后 | 4/7 修复建议（末尾） | 查看安全性提示 | 自动展示（CRITICAL 回退重新生成，WARNING 提醒） |
+| EXECUTION_GUARD | 5/7 人工审核（开头） | 查看影响范围、确认危险操作 | 危险操作时要求输入 CONFIRM |
+| REVIEWING | 5/7 人工审核 | 确认 / 拒绝 / 编辑参数 / 删除步骤 / 重排步骤 | y / n / e / d / r |
+
+### 5.3 隐藏子步骤的用户感知
+
+用户不会看到 SECURITY_CHECKING、EXECUTION_GUARD、SNAPSHOT 作为独立步骤，但会感知到它们的执行效果：
+
+| 隐藏子步骤 | 用户感知方式 | 显示时机 |
+|-----------|------------|---------|
+| SECURITY_CHECKING | 修复建议步骤末尾显示安全性提示（✓ 通过 / ⚠ 有警告 / ✗ 未通过） | PLANNING 完成后自动执行 |
+| EXECUTION_GUARD | 人工审核步骤开头显示熔断结果，危险操作时要求输入 CONFIRM | 进入 REVIEWING 前自动执行 |
+| SNAPSHOT | 审核同意后显示「正在创建快照...」+ 「✓ 快照已创建」 | 用户确认后自动执行 |
 
 ## 6. 异常处理
 
@@ -333,9 +392,9 @@ galaxy-diag run -d "数据磁盘未识别" --auto
 | LLM 服务不可用 | 保存当前状态 → 暂停 → 提示用户恢复推理服务后 resume | current_step 不变 |
 | Tool 执行失败 (采集) | 记录失败原因 → 提示用户 → 可选择跳过或终止 | current_step 不变 |
 | 进程崩溃 / Ctrl+C | 下次 resume 从 current_step 继续（已落盘） | current_step 不变（上次保存值） |
-| SECURITY_CHECKING 失败 | 回退到 PLANNING 重新生成 | current_step 回退 |
-| EXECUTION_GUARD 强制拦截 (CRITICAL) | 终止工作流，标记为 rejected | 标记为系统拒绝 |
-| EXECUTION_GUARD 需额外确认 (WARNING) | 回到 REVIEWING 要求用户输入 CONFIRM | current_step 回退到 REVIEWING |
+| SECURITY_CHECKING 失败 (CRITICAL) | 回退到 PLANNING 重新生成（用户仍在「修复建议」步骤） | current_step 回退到 PLANNING |
+| EXECUTION_GUARD 强制拦截 (CRITICAL) | 进入 REVIEWING 要求 CONFIRM，输入不匹配则终止工作流 | 进入 REVIEWING 或终止 |
+| EXECUTION_GUARD 需额外确认 (WARNING) | 进入 REVIEWING 要求输入 CONFIRM | 进入 REVIEWING |
 | 执行失败 | 自动从快照回滚 → 记录审计日志 → 终止 | 标记回滚 |
 
 ## 7. 与 CLI 的集成
@@ -346,9 +405,12 @@ galaxy-diag run -d "数据磁盘未识别" --auto
 2. 创建 WorkflowState（生成 session_id）
 3. 按状态机顺序调用各模块
 4. 每步转换后调用 `display.py` 渲染结果
-5. 在 REVIEWING 步骤调用 `interact.confirm()` 等待人工确认
-6. 在 EXECUTION_GUARD 步骤展示影响范围评估，必要时要求 CONFIRM 确认
-7. 全程持久化状态，支持 `--resume` 恢复
+5. **步骤标题仅在用户可见步骤切换时打印**（通过 `STEP_TO_USER_STEP` 映射和 `_last_user_step_num` 跟踪）
+6. 在 SECURITY_CHECKING 步骤末尾显示安全性提示（归属「修复建议」步骤）
+7. 在 EXECUTION_GUARD 步骤执行熔断检查（归属「人工审核」步骤），结果传递给 REVIEWING
+8. 在 REVIEWING 步骤等待人工确认，危险操作需输入 CONFIRM
+9. 用户审核同意后自动创建快照（显示「正在创建快照」提示），然后执行修复
+10. 全程持久化状态，支持 `--resume` 恢复
 
 ```python
 # engine.py 伪代码
@@ -356,46 +418,38 @@ class WorkflowEngine:
     def __init__(self, state: WorkflowState, console: Console):
         self.state = state
         self.console = console
+        self._last_user_step_num = 0  # 跟踪上一次打印的用户步骤编号
 
     def run(self) -> None:
         while self.state.current_step != WorkflowStep.DONE:
             step = self.state.current_step
-            if step == WorkflowStep.ENV_RECOGNISING:
-                self._do_env_recognising()
-            elif step == WorkflowStep.COLLECTING:
-                self._do_collecting()
-            elif step == WorkflowStep.DIAGNOSING:
-                self._do_diagnosing()
-            elif step == WorkflowStep.PLANNING:
-                self._do_planning()
-            elif step == WorkflowStep.SECURITY_CHECKING:
-                self._do_security_checking()
-            elif step == WorkflowStep.REVIEWING:
-                self._do_reviewing()
-            elif step == WorkflowStep.EXECUTION_GUARD:
-                self._do_execution_guard()
-            elif step == WorkflowStep.SNAPSHOT:
-                self._do_snapshot()
-            elif step == WorkflowStep.EXECUTING:
-                self._do_executing()
-            elif step == WorkflowStep.VERIFYING:
-                self._do_verifying()
+            self._print_step_header(step)  # 仅在用户步骤切换时打印
+            # ... 执行步骤逻辑
+
+    def _print_step_header(self, step: WorkflowStep) -> None:
+        """仅在用户可见步骤切换时打印步骤标题"""
+        user_num, user_label = STEP_TO_USER_STEP[step]
+        if user_num != self._last_user_step_num:
+            self.console.print(
+                f"\n━━━ 步骤 {user_num}/{TOTAL_USER_STEPS}: {user_label} ━━━"
+            )
+            self._last_user_step_num = user_num
 ```
 
 ### 各步骤与模块的调用关系
 
-| 步骤 | 调用模块 | 说明 |
-|------|---------|------|
-| ENV_RECOGNISING | `collector.collect_env()` | 环境识别 |
-| COLLECTING | `diagnoser.build_diagnostic_context()` + `diagnoser.rules.match_rules()` (短路预检) | 信息采集 + 已知故障短路 |
-| DIAGNOSING | `diagnoser.diagnose()` | 规则匹配 + LLM 推理 |
-| PLANNING | `fixer.generate()` | LLM 生成 → 后处理 → 模板渲染 → 脚本组装 |
-| SECURITY_CHECKING | `fixer.checker.check()` | D-03: 语法 + 兼容性 + 危险建议性警告 |
-| REVIEWING | `interact.confirm()` | 人工审核（y/n/edit） |
-| EXECUTION_GUARD | `safety.danger.execution_guard_check()` | E-02: 危险深度检测 + 变量展开 + 影响评估 |
-| SNAPSHOT | `safety.snapshot.create()` | 创建恢复快照 |
-| EXECUTING | `safety.executor.run()` | 受控执行修复命令 |
-| VERIFYING | `diagnoser.verify()` | 验证修复效果 |
+| 步骤 | 调用模块 | 用户步骤 | 说明 |
+|------|---------|---------|------|
+| ENV_RECOGNISING | `collector.collect_env()` | 1/7 环境识别 | 环境识别 |
+| COLLECTING | `diagnoser.build_diagnostic_context()` + `diagnoser.rules.match_rules()` (短路预检) | 2/7 信息收集 | 信息采集 + 已知故障短路 |
+| DIAGNOSING | `diagnoser.diagnose()` | 3/7 根因分析 | 规则匹配 + LLM 推理 |
+| PLANNING | `fixer.generate()` | 4/7 修复建议 | LLM 生成 → 后处理 → 模板渲染 → 脚本组装 |
+| SECURITY_CHECKING | `fixer.checker.check()` | 4/7 修复建议（末尾） | D-03: 语法 + 兼容性 + 危险建议性警告；CRITICAL 时在修复建议步骤内回退 |
+| EXECUTION_GUARD | `safety.danger.execution_guard_check()` | 5/7 人工审核（开头） | E-02: 危险深度检测 + 变量展开 + 影响评估；结果传递给 REVIEWING |
+| REVIEWING | `interact.confirm()` | 5/7 人工审核 | 人工审核（y/n/e/d/r）；危险操作需 CONFIRM 确认 |
+| SNAPSHOT | `safety.snapshot.create()` | 6/7 执行（开头） | 审核同意后自动创建快照，显示「正在创建快照」提示 |
+| EXECUTING | `safety.executor.run()` | 6/7 执行 | 受控执行修复命令 |
+| VERIFYING | `diagnoser.verify()` | 7/7 结果验证 | 验证修复效果 |
 
 ## 8. 设计约束与后续扩展
 

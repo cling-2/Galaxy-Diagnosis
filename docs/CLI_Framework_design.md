@@ -179,9 +179,51 @@ galaxy-diag audit-log [选项]
 galaxy-diag run [选项]
 
 选项:
-  --description TEXT  问题描述
-  --resume ID         恢复中断的工作流
+  --description TEXT, -d TEXT  问题描述
+  --resume [ID]               恢复中断的工作流；不指定 ID 时默认恢复最近的未完成会话
+  --auto                      自动模式（中间步骤只展示不暂停，审核步骤仍需人工）
+  --log-file PATH             上传日志文件供诊断参考（可多次指定）
+  --clean                     清理所有未完成会话后再启动新工作流
+  --mock                      Mock 模式：使用预设响应，不连接真实 LLM（用于开发测试和流程验证）
 ```
+
+**用户可见步骤流程（7 步）**：
+
+```
+━━━ 步骤 1/7: 环境识别 ━━━
+    识别运行环境类型 (VM/容器/裸机) 并采集软硬件信息
+
+━━━ 步骤 2/7: 信息收集 ━━━
+    采集日志、系统状态等诊断信息
+
+━━━ 步骤 3/7: 根因分析 ━━━
+    基于诊断上下文推理根因，声明不确定性
+
+━━━ 步骤 4/7: 修复建议 ━━━
+    生成修复命令/脚本建议
+    ┈┈ 生成后自动执行 D-03 安全检测 ┈┈
+    ✓ 生成后检测通过 / ⚠ 有警告 / ✗ 未通过（回退重新生成）
+
+━━━ 步骤 5/7: 人工审核 ━━━
+    ┈┈ 执行前熔断检查 (E-02) ┈┈
+    ✓ 熔断通过 / ⚠ 检测到危险操作（需输入 CONFIRM 确认）
+    📋 操作摘要展示
+    请选择操作: y(确认) / n(拒绝) / e(编辑) / d(删除) / r(重排)
+
+━━━ 步骤 6/7: 执行 ━━━
+    正在创建快照...
+    ✓ 快照已创建: snap_xxxxxxxx
+    执行修复...
+    ✓ 修复执行完成
+
+━━━ 步骤 7/7: 结果验证 ━━━
+    验证修复是否生效
+    ✓ 修复验证通过
+
+✅ 工作流完成
+```
+
+> **内部状态机与用户步骤的映射**：内部 10 个状态（含 SECURITY_CHECKING、EXECUTION_GUARD、SNAPSHOT）自动映射为用户可见的 7 步。隐藏子步骤的执行效果以提示信息形式展示在对应步骤内，不会打印独立的步骤标题。详见 `Workflow-design.md` §2.2。
 
 #### `galaxy-diag completion`
 
@@ -606,7 +648,8 @@ CLI 框架引入的新依赖：
 | 3 | confirm 默认拒绝 | `confirm("确认?", default=False)` + 回车 | 返回 False | 单元测试 mock input |
 | 4 | confirm 确认 | `confirm("确认?")` + 输入 `y` | 返回 True | 单元测试 mock input |
 | 5 | confirm 危险模式 | `confirm("确认?", danger=True)` + 输入 `y` | 红色提示，返回 False（需 CONFIRM） | 单元测试 |
-| 6 | prompt_input 校验重试 | `validator=lambda x: None if x.isdigit() else "需数字"` + 输入 `abc` 再 `123` | 先提示"需数字"，后返回 `"123"` | 单元测试 mock 多次 input |
+| 6 | REVIEWING 危险操作 CONFIRM | 执行前熔断检测到 WARNING，进入 REVIEWING 要求 CONFIRM | 输入 CONFIRM 通过，输入其他终止 | 集成测试 |
+| 7 | prompt_input 校验重试 | `validator=lambda x: None if x.isdigit() else "需数字"` + 输入 `abc` 再 `123` | 先提示"需数字"，后返回 `"123"` | 单元测试 mock 多次 input |
 | 7 | prompt_edit_params | 模板含 `<IP>` 占位符，输入 `10.0.0.1` | 返回 `{"IP": "10.0.0.1"}`，展示替换后命令 | 单元测试 |
 | 8 | 配置缺失兜底 | YAML 缺少 `log_level` | 使用默认值 `"INFO"`，不报错 | 单元测试 |
 | 9 | CLI 参数覆盖 | `--verbose` + YAML 中 `log_level: INFO` | 日志级别为 DEBUG | 单元测试 |
@@ -616,3 +659,8 @@ CLI 框架引入的新依赖：
 | 13 | 子命令 stub | `galaxy-diag fix --session test` | 输出"修复建议模块尚未实现 (REQ-D)" | 集成测试 |
 | 14 | 无效子命令 | `galaxy-diag invalid_cmd` | argparse 错误提示 + 退出码 2 | 集成测试 |
 | 15 | Ctrl+C 中断 | 交互过程中按 Ctrl+C | 输出"已中断" + 退出码 130 | 手动测试 |
+| 16 | 用户可见步骤标题 | `galaxy-diag run --mock` 全流程 | 打印 7 个步骤标题（1/7 ~ 7/7），SECURITY_CHECKING/EXECUTION_GUARD/SNAPSHOT 不打印独立标题 | 集成测试 |
+| 17 | SECURITY_CHECKING 归属修复建议 | D-03 检测通过 | 安全性提示显示在步骤 4/7 内，不切换步骤标题 | 集成测试 |
+| 18 | EXECUTION_GUARD 归属人工审核 | E-02 熔断通过 | 熔断结果显示在步骤 5/7 内，不切换步骤标题 | 集成测试 |
+| 19 | SNAPSHOT 归属执行 | 用户确认后 | 显示「正在创建快照」提示，快照创建后进入执行，不切换步骤标题 | 集成测试 |
+| 20 | D-03 CRITICAL 回退 | 生成后检测有 CRITICAL 问题 | 回退到 PLANNING 重新生成，用户仍停留在步骤 4/7 | 集成测试 |

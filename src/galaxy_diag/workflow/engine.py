@@ -2,6 +2,14 @@
 
 对应 workflow-design.md §2 状态机 + §7 与 CLI 的集成。
 当前各步骤回调为 stub（返回 mock 数据），业务模块实现后替换回调即可。
+
+用户可见步骤（7 步）：
+  环境识别 → 信息收集 → 根因分析 → 修复建议 → 人工审核 → 执行 → 结果验证
+
+内部状态（10 个）与用户可见步骤的映射：
+  - 修复建议 = PLANNING + SECURITY_CHECKING（生成后检测在建议末尾执行）
+  - 人工审核 = EXECUTION_GUARD（执行前熔断）+ REVIEWING（审核确认）
+  - 执行     = SNAPSHOT（自动创建快照）+ EXECUTING
 """
 
 from __future__ import annotations
@@ -44,6 +52,8 @@ from galaxy_diag.workflow.states import (
     REVIEWING_NEXT_ON_REJECT,
     STEP_DESCRIPTIONS,
     STEP_LABELS,
+    STEP_TO_USER_STEP,
+    TOTAL_USER_STEPS,
     VERIFYING_NEXT_ON_FAILURE,
     VERIFYING_NEXT_ON_SUCCESS,
     is_valid_transition,
@@ -114,6 +124,7 @@ class WorkflowEngine:
     2. 每步转换后立即持久化
     3. 调用 display.py 渲染结果、interact.py 等待人工确认
     4. 支持逐步/自动两种模式
+    5. 用户可见 7 步，内部 10 个状态自动映射
     """
 
     def __init__(
@@ -139,6 +150,7 @@ class WorkflowEngine:
         self.mock = mock
         self._user_log_files = user_log_files or []
         self._console = display.get_console()
+        self._last_user_step_num = 0  # 上一次打印的用户可见步骤编号（避免重复打印步骤标题）
 
         # 初始化 ModelAdapter（延迟导入避免循环依赖）
         if mock:
@@ -176,10 +188,10 @@ class WorkflowEngine:
                     self._do_planning()
                 elif step == WorkflowStep.SECURITY_CHECKING:
                     self._do_security_checking()
-                elif step == WorkflowStep.REVIEWING:
-                    self._do_reviewing()
                 elif step == WorkflowStep.EXECUTION_GUARD:
                     self._do_execution_guard()
+                elif step == WorkflowStep.REVIEWING:
+                    self._do_reviewing()
                 elif step == WorkflowStep.SNAPSHOT:
                     self._do_snapshot()
                 elif step == WorkflowStep.EXECUTING:
@@ -309,20 +321,15 @@ class WorkflowEngine:
     # ===== 步骤实现 =====
 
     def _do_env_recognising(self) -> None:
-        """ENV_RECOGNISING: 环境感知
+        """ENV_RECOGNISING: 环境识别
 
         调用 collector 模块识别环境类型、采集软硬件信息。
+        用户可见步骤 1/7: 环境识别
         """
         env_info = collect_env()
 
         self.state.env_info = env_info
         display.print_env_info(env_info)
-
-        # # 逐步模式：ENV_RECOGNISING 后允许用户查看采集结果
-        # if not self.auto:
-        #     if not interact.confirm("环境识别完成，是否继续?", default=True):
-        #         self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
-        #         return
 
         self._transition(WorkflowStep.COLLECTING)
 
@@ -331,6 +338,7 @@ class WorkflowEngine:
 
         调用 build_diagnostic_context() 按问题描述定向采集，
         产出 DiagnosticContext 写入 WorkflowState。
+        用户可见步骤 2/7: 信息收集
         """
         from galaxy_diag.diagnoser import build_diagnostic_context
         from galaxy_diag.diagnoser.rules import match_rules
@@ -381,6 +389,7 @@ class WorkflowEngine:
         """DIAGNOSING: 根因分析
 
         调用 diagnoser.diagnose() 推理根因（规则匹配 + LLM）。
+        用户可见步骤 3/7: 根因分析
         """
         from galaxy_diag.diagnoser import diagnose
 
@@ -479,6 +488,10 @@ class WorkflowEngine:
         """PLANNING: 修复建议生成
 
         调用 fixer 模块生成修复命令/脚本。
+        用户可见步骤 4/7: 修复建议（ SECURITY_CHECKING 在此步骤末尾执行）
+
+        注意：如果从 SECURITY_CHECKING 回退到 PLANNING（CRITICAL 检测失败），
+        用户仍然在"修复建议"步骤中，不会看到步骤切换。
         """
         from galaxy_diag.fixer import generate
 
@@ -534,20 +547,16 @@ class WorkflowEngine:
             if has_editable and interact.confirm("是否再次编辑修复参数?", default=False):
                 self._edit_fix_params(proposal)
 
-        # 逐步模式：PLANNING 后等待用户确认继续
-        if not self.auto:
-            if not interact.confirm("修复建议已生成，是否继续进入安全检测?", default=True):
-                self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
-                return
-
+        # PLANNING 完成后进入 SECURITY_CHECKING（在修复建议步骤末尾执行检测）
         self._transition(WorkflowStep.SECURITY_CHECKING)
 
     def _do_security_checking(self) -> None:
         """SECURITY_CHECKING: D-03 生成后检测（代码质量保障）
 
-        检测：语法 + 兼容性 + 危险模式建议性警告
-        策略：CRITICAL（语法/兼容性错误）→ 回退 PLANNING
+        在"修复建议"步骤末尾执行，显示安全性提示。
+        策略：CRITICAL（语法/兼容性错误）→ 回退 PLANNING 重新生成
               WARNING（危险模式提醒）→ 允许继续
+        注意：此步骤不打印独立的步骤标题，归属于用户可见步骤 4/7"修复建议"
         """
         from galaxy_diag.fixer.checker import check
 
@@ -569,7 +578,7 @@ class WorkflowEngine:
             )
             proposal.check_passed = True
             proposal.check_issues = []
-            self._transition(WorkflowStep.REVIEWING)
+            self._transition(WorkflowStep.EXECUTION_GUARD)
             return
 
         self._console.print("[info]执行生成后检测 (D-03)...[/info]")
@@ -586,6 +595,7 @@ class WorkflowEngine:
         self._save()
 
         if not result.passed:
+            # CRITICAL: 显示安全性提示，回退到 PLANNING 重新生成
             self._console.print("\n[danger]✗ 生成后检测未通过[/danger]")
             for issue in result.issues:
                 if issue.severity == CheckSeverity.CRITICAL:
@@ -602,6 +612,7 @@ class WorkflowEngine:
             self._transition(WorkflowStep.PLANNING)
             return
 
+        # 通过或仅 WARNING：显示安全性提示后继续
         if result.has_warning:
             self._console.print("\n[warning]⚠ 生成后检测通过（有警告）[/warning]")
             for issue in result.issues:
@@ -610,6 +621,31 @@ class WorkflowEngine:
         else:
             self._console.print("[success]✓ 生成后检测通过[/success]")
 
+        # 安全性提示显示完毕，进入执行前熔断
+        self._transition(WorkflowStep.EXECUTION_GUARD)
+
+    def _do_execution_guard(self) -> None:
+        """EXECUTION_GUARD: E-02 执行前熔断
+
+        在"人工审核"步骤前执行安全性评估。
+        - 通过 → 进入 REVIEWING（正常审核）
+        - WARNING/CRITICAL → 进入 REVIEWING，但标记需要 CONFIRM 确认
+
+        注意：此步骤不打印独立的步骤标题，归属于用户可见步骤 5/7"人工审核"
+        """
+        self._console.print("[info]执行前熔断检查 (E-02)...[/info]")
+        display.print_stub_notice("REQ-E-02", "执行前熔断")
+
+        # stub: 当前直接通过
+        # 实际实现：
+        #   CRITICAL → 终止工作流（不可绕过）或在 REVIEWING 中要求 CONFIRM
+        #   WARNING  → 在 REVIEWING 中要求 CONFIRM 确认
+        #   pass     → 正常进入 REVIEWING
+
+        # 记录熔断结果，供 REVIEWING 参考
+        self._guard_result = "pass"  # "pass" | "warning" | "critical"
+
+        self._console.print("[success]✓ 执行前熔断通过（模拟）[/success]")
         self._transition(WorkflowStep.REVIEWING)
 
     def _do_reviewing(self) -> None:
@@ -617,10 +653,44 @@ class WorkflowEngine:
 
         展示修复建议 + 风险评估，等待用户确认/拒绝/修改。
         此步骤始终需要人工确认（红线 2），无论逐步还是自动模式。
+
+        如果执行前熔断检测到危险操作，需要额外输入 CONFIRM 确认。
+        用户确认后，自动创建快照（显示"正在创建快照"提示），然后进入执行。
+
+        用户可见步骤 5/7: 人工审核（含 EXECUTION_GUARD 的熔断结果）
         """
         proposal = self.state.fix
         if not proposal:
             raise WorkflowError("无可审核的修复建议")
+
+        # ── 执行前熔断结果处理 ──
+        guard_result = getattr(self, "_guard_result", "pass")
+        if guard_result in ("warning", "critical"):
+            self._console.print(
+                f"\n[{'danger' if guard_result == 'critical' else 'warning'}]"
+                f"⚠ 执行前熔断检测到{'危险' if guard_result == 'critical' else '警告'}操作"
+                f"[/{'danger' if guard_result == 'critical' else 'warning'}]"
+            )
+            if proposal.impact_scope:
+                self._console.print(f"  [warning]影响范围: {proposal.impact_scope}[/warning]")
+
+            # 要求输入 CONFIRM 全称以确认
+            self._console.print(
+                "\n[danger]此操作需要额外确认，请输入 CONFIRM 以继续[/danger]"
+            )
+            try:
+                confirm_input = input("请输入: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self._console.print("\n[dim]确认已取消，工作流终止[/dim]")
+                self._mark_rejected()
+                return
+
+            if confirm_input != "CONFIRM":
+                self._console.print("[dim]确认输入不匹配，工作流终止[/dim]")
+                self._mark_rejected()
+                return
+
+            self._console.print("[success]✓ 危险操作已确认[/success]")
 
         # 展示操作摘要
         self._console.print("\n[heading]📋 操作摘要[/heading]")
@@ -655,7 +725,8 @@ class WorkflowEngine:
                 raise
 
             if choice in ("y", "yes"):
-                self._transition(WorkflowStep.EXECUTION_GUARD)
+                # 用户确认 → 自动创建快照（显示提示）→ 执行
+                self._transition(WorkflowStep.SNAPSHOT)
                 return
             elif choice in ("n", "no"):
                 self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
@@ -664,7 +735,7 @@ class WorkflowEngine:
             elif choice in ("e", "edit"):
                 if proposal.commands:
                     self._edit_fix_params(proposal)
-                # 编辑后重走安全检测
+                # 编辑后重走安全检测（回到修复建议步骤内部）
                 self._transition(WorkflowStep.SECURITY_CHECKING)
                 return
             elif choice in ("d", "delete"):
@@ -678,33 +749,17 @@ class WorkflowEngine:
             else:
                 self._console.print("[dim]无效输入，请重新选择[/dim]")
 
-    def _do_execution_guard(self) -> None:
-        """EXECUTION_GUARD: E-02 执行前熔断
-
-        对修复建议做执行前安全检查（危险命令深度检测 + 影响范围评估）。
-        当前为 stub：直接通过到 SNAPSHOT。完整实现依赖 safety/danger.py。
-        """
-        self._console.print("[info]执行前熔断检查 (E-02)...[/info]")
-        display.print_stub_notice("REQ-E-02", "执行前熔断")
-
-        # stub: 直接通过
-        # 实际实现：
-        #   CRITICAL → 终止工作流（不可绕过）
-        #   WARNING  → 回到 REVIEWING 要求 CONFIRM 确认
-        #   pass     → SNAPSHOT
-        self._console.print("[success]✓ 执行前熔断通过（模拟）[/success]")
-        self._transition(WorkflowStep.SNAPSHOT)
-
     def _do_snapshot(self) -> None:
         """SNAPSHOT: 创建恢复快照
 
-        执行前创建恢复快照，用于失败回滚。
-        当前为 stub：创建 mock 快照元数据。
+        用户审核同意后自动执行，不是用户可见的独立步骤。
+        在 CLI 显示"正在创建快照"提示，创建完毕后进入执行修复。
+
+        用户可见：此步骤归属于用户可见步骤 6/7"执行"
         """
-        self._console.print("[info]创建恢复快照...[/info]")
+        self._console.print("[info]正在创建快照...[/info]")
         # 当前为 stub：创建 mock 快照
         # 实际实现：调用 safety.snapshot 备份受影响的文件和服务状态
-        display.print_stub_notice("REQ-E-03", "操作快照")
 
         proposal = self.state.fix
         affected_files = []
@@ -733,6 +788,8 @@ class WorkflowEngine:
 
         按步骤执行修复命令并监控。
         当前为 stub：模拟执行成功。
+
+        用户可见步骤 6/7: 执行
         """
         self._console.print("[info]执行修复...[/info]")
         # 当前为 stub：模拟执行
@@ -748,6 +805,8 @@ class WorkflowEngine:
 
         验证修复是否生效。
         当前为 stub：模拟验证成功。
+
+        用户可见步骤 7/7: 结果验证
         """
         self._console.print("[info]验证修复结果...[/info]")
         # 当前为 stub：模拟验证成功
@@ -818,15 +877,23 @@ class WorkflowEngine:
     # ===== 辅助方法 =====
 
     def _print_step_header(self, step: WorkflowStep) -> None:
-        """打印步骤标题"""
-        label = STEP_LABELS.get(step, step.value)
-        desc = STEP_DESCRIPTIONS.get(step, "")
-        step_num = _step_number(step)
-        self._console.print(
-            f"\n[heading]━━━ 步骤 {step_num}/{len(STEP_LABELS)}: {label} ━━━[/heading]"
-        )
-        if desc and self.verbose:
-            self._console.print(f"[dim]  {desc}[/dim]")
+        """打印步骤标题（仅在用户可见步骤切换时打印）
+
+        内部状态 SECURITY_CHECKING / EXECUTION_GUARD / SNAPSHOT
+        分别归属于用户可见步骤 4/5/6，不会触发新的步骤标题打印。
+        """
+        user_step = STEP_TO_USER_STEP.get(step, (0, step.value))
+        user_num, user_label = user_step
+
+        if user_num != self._last_user_step_num:
+            self._console.print(
+                f"\n[heading]━━━ 步骤 {user_num}/{TOTAL_USER_STEPS}: {user_label} ━━━[/heading]"
+            )
+            if self.verbose:
+                desc = STEP_DESCRIPTIONS.get(step, "")
+                if desc:
+                    self._console.print(f"[dim]  {desc}[/dim]")
+            self._last_user_step_num = user_num
 
     def _edit_fix_params(self, proposal: FixProposal) -> None:
         """交互式编辑修复参数
@@ -985,11 +1052,3 @@ class WorkflowEngine:
             fault_scope="存储层：VM 磁盘控制器驱动",
             diagnosis_source=DiagnosisSource.RULE_MATCH,
         )
-
-
-def _step_number(step: WorkflowStep) -> int:
-    """获取步骤序号（1-based）"""
-    try:
-        return list(STEP_LABELS.keys()).index(step) + 1
-    except ValueError:
-        return 0
