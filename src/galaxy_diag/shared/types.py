@@ -294,10 +294,62 @@ class AuditRecord:
     session_id: str = ""
     operator: str = ""
     action: str = ""
-    result: Literal["success", "failure", "rollback", "rejected"] = "success"
+    result: Literal["confirmed", "success", "failure", "rollback", "rejected"] = "success"
     llm_basis: str = ""  # LLM 分析依据摘要
     snapshot_id: str | None = None  # 关联的快照 ID
     user_input: str = ""  # 用户确认输入（y / N / CONFIRM xxx）
+
+
+@dataclass
+class DangerPattern:
+    """危险命令模式条目（safety/patterns.py 数据定义）
+
+    复用 CheckSeverity 区分严重级别：
+    - CRITICAL：强制进入 CONFIRM 流程，输入不匹配则终止
+    - WARNING：要求输入 CONFIRM 确认
+    """
+
+    pattern: str  # 正则表达式
+    category: Literal["data_loss", "privilege", "network", "system"] = "data_loss"
+    severity: CheckSeverity = CheckSeverity.CRITICAL
+    description: str = ""  # 风险说明（展示给用户）
+    suggestion: str = ""  # 建议操作（展示给用户）
+
+
+@dataclass
+class GuardResult:
+    """E-02 执行前熔断结果（safety/danger.py 产出 → review.py 消费）"""
+
+    level: Literal["pass", "warning", "critical"] = "pass"
+    matched_patterns: list[DangerPattern] = field(default_factory=list)
+    impact_summary: str = ""  # 影响范围一句话汇总
+    message: str = ""  # 汇总提示信息
+
+
+class ReviewDecision(str, Enum):
+    """人工审核决定（safety/review.py 产出 → engine.py 消费）"""
+
+    YES = "yes"    # 确认执行
+    NO = "no"      # 拒绝（终止工作流）
+    EDIT = "edit"  # 编辑参数（回 SECURITY_CHECKING）
+
+
+@dataclass
+class RollbackResult:
+    """回滚结果（safety/snapshot.py rollback 产出）"""
+
+    success: bool = False
+    restored_files: list[str] = field(default_factory=list)
+    message: str = ""
+
+
+@dataclass
+class ExecuteResult:
+    """受控执行结果（safety/executor.py run 产出）"""
+
+    success: bool = False
+    output: str = ""
+    failed_step: int = -1  # 失败的步骤序号（1-based），-1 表示未失败
 
 
 # ===== 工作流 =====

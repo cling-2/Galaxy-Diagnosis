@@ -68,10 +68,11 @@ galaxy-diag/
 │       ├── safety/               # [E-01~E-04] 安全可控
 │       │   ├── __init__.py
 │       │   ├── review.py         # 人工审核拦截（stdin [y/N] 专用通道，不经 LLM）
-│       │   ├── danger.py         # 危险操作多维防护（模式库 + 变量展开检测）
+│       │   ├── danger.py         # 危险操作多维防护（模式库 + 变量展开检测 + 影响评估）
+│       │   ├── patterns.py       # 危险命令模式库（数据定义，非逻辑）
 │       │   ├── snapshot.py       # 操作快照 & 一键回滚
-│       │   ├── audit.py          # 审计日志（JSONL，专用工具写入，不经 Agent 输出流）
-│       │   └── patterns.py       # 危险命令模式库（数据定义，非逻辑）
+│       │   ├── executor.py       # 受控执行器（逐步执行 + 失败即停 + 超时控制）
+│       │   └── audit.py          # 审计日志（JSONL，专用函数写入，不经 Agent 输出流）
 │       ├── workflow/             # [F-01/F-02/F-03] 工作流编排与 CLI
 │       │   ├── __init__.py
 │       │   ├── engine.py         # 端到端状态机（收集→识别→分析→修复→审核→执行→验证）
@@ -333,7 +334,7 @@ class WorkflowState:
                     │  safety/ (硬编码逻辑，不经 LLM)   │
                     │                                  │
   ┌─────────────┐   │  ① danger.py: 正则匹配危险命令   │
-  │ patterns.py │──→│     命中 → 强制拦截，不给确认选项 │
+  │ patterns.py │──→│     命中 → 人工审核，要求 CONFIRM │
   │ (危险模式库) │   │                                  │
   └─────────────┘   │  ② review.py: CLI 弹出 [y/N]    │
                     │     输入走 stdin，不走 LLM 通道   │

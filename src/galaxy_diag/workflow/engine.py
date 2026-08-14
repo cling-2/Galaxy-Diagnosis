@@ -33,13 +33,15 @@ from galaxy_diag.shared.types import (
     EnvironmentType,
     FixProposal,
     FixSource,
+    GuardResult,
     HardwareInfo,
+    ReviewDecision,
     SessionStatus,
-    SnapshotMeta,
     StorageInfo,
     WorkflowStep,
     WorkflowState,
 )
+from galaxy_diag.safety import audit, danger, executor, snapshot
 from galaxy_diag.workflow.cli import display, interact
 from galaxy_diag.workflow.persist import (
     find_resumable_sessions,
@@ -629,23 +631,38 @@ class WorkflowEngine:
 
         在"人工审核"步骤前执行安全性评估。
         - 通过 → 进入 REVIEWING（正常审核）
-        - WARNING/CRITICAL → 进入 REVIEWING，但标记需要 CONFIRM 确认
+        - WARNING/CRITICAL → 进入 REVIEWING，要求 CONFIRM 确认
 
         注意：此步骤不打印独立的步骤标题，归属于用户可见步骤 5/7"人工审核"
         """
         self._console.print("[info]执行前熔断检查 (E-02)...[/info]")
-        display.print_stub_notice("REQ-E-02", "执行前熔断")
 
-        # stub: 当前直接通过
-        # 实际实现：
-        #   CRITICAL → 终止工作流（不可绕过）或在 REVIEWING 中要求 CONFIRM
-        #   WARNING  → 在 REVIEWING 中要求 CONFIRM 确认
-        #   pass     → 正常进入 REVIEWING
+        guard_result = danger.execution_guard_check(
+            proposal=self.state.fix,
+            env_type=self.state.env_info.env_type if self.state.env_info else EnvironmentType.BARE_METAL,
+        )
+        self._guard_result = guard_result
 
-        # 记录熔断结果，供 REVIEWING 参考
-        self._guard_result = "pass"  # "pass" | "warning" | "critical"
+        # 渲染熔断结果
+        if guard_result.level == "pass":
+            self._console.print("[success]✓ 执行前熔断通过[/success]")
+        elif guard_result.level == "warning":
+            self._console.print(f"[warning]⚠ 执行前熔断检测到警告: {guard_result.message}[/warning]")
+        else:  # critical
+            self._console.print(f"[danger]✗ 执行前熔断检测到危险操作: {guard_result.message}[/danger]")
 
-        self._console.print("[success]✓ 执行前熔断通过（模拟）[/success]")
+        # 展示命中模式详情
+        for pat in guard_result.matched_patterns:
+            icon = "⚠" if pat.severity == CheckSeverity.WARNING else "✗"
+            style = "warning" if pat.severity == CheckSeverity.WARNING else "danger"
+            self._console.print(f"  [{style}]{icon} [{pat.category}] {pat.description}[/{style}]")
+            if pat.suggestion:
+                self._console.print(f"    💡 {pat.suggestion}")
+
+        # 展示影响范围
+        if guard_result.impact_summary:
+            self._console.print(f"  [info]📊 {guard_result.impact_summary}[/info]")
+
         self._transition(WorkflowStep.REVIEWING)
 
     def _do_reviewing(self) -> None:
@@ -664,15 +681,19 @@ class WorkflowEngine:
             raise WorkflowError("无可审核的修复建议")
 
         # ── 执行前熔断结果处理 ──
-        guard_result = getattr(self, "_guard_result", "pass")
-        if guard_result in ("warning", "critical"):
+        guard_result = getattr(self, "_guard_result", None)
+        if guard_result is None:
+            guard_result = GuardResult(level="pass")
+        guard_level = guard_result.level if isinstance(guard_result, GuardResult) else "pass"
+
+        if guard_level in ("warning", "critical"):
             self._console.print(
-                f"\n[{'danger' if guard_result == 'critical' else 'warning'}]"
-                f"⚠ 执行前熔断检测到{'危险' if guard_result == 'critical' else '警告'}操作"
-                f"[/{'danger' if guard_result == 'critical' else 'warning'}]"
+                f"\n[{'danger' if guard_level == 'critical' else 'warning'}]"
+                f"⚠ 执行前熔断检测到{'危险' if guard_level == 'critical' else '警告'}操作"
+                f"[/{'danger' if guard_level == 'critical' else 'warning'}]"
             )
-            if proposal.impact_scope:
-                self._console.print(f"  [warning]影响范围: {proposal.impact_scope}[/warning]")
+            if guard_result.impact_summary:
+                self._console.print(f"  [warning]影响范围: {guard_result.impact_summary}[/warning]")
 
             # 要求输入 CONFIRM 全称以确认
             self._console.print(
@@ -725,11 +746,13 @@ class WorkflowEngine:
                 raise
 
             if choice in ("y", "yes"):
-                # 用户确认 → 自动创建快照（显示提示）→ 执行
+                # 用户确认 → 写审计日志（confirmed）→ 自动创建快照 → 执行
+                self._write_audit(result="confirmed", user_input="CONFIRM" if guard_level != "pass" else "y")
                 self._transition(WorkflowStep.SNAPSHOT)
                 return
             elif choice in ("n", "no"):
                 self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
+                self._write_audit(result="rejected", user_input="n")
                 self._mark_rejected()
                 return
             elif choice in ("e", "edit"):
@@ -758,29 +781,25 @@ class WorkflowEngine:
         用户可见：此步骤归属于用户可见步骤 6/7"执行"
         """
         self._console.print("[info]正在创建快照...[/info]")
-        # 当前为 stub：创建 mock 快照
-        # 实际实现：调用 safety.snapshot 备份受影响的文件和服务状态
 
         proposal = self.state.fix
-        affected_files = []
-        affected_services = []
-        if proposal and proposal.commands:
-            for cmd in proposal.commands:
-                if cmd.editable_params:
-                    affected_files.extend(cmd.editable_params.values())
+        try:
+            snap_meta = snapshot.create_snapshot(
+                proposal=proposal,
+                session_id=self.state.session_id,
+            )
+        except GalaxyDiagError as e:
+            self._console.print(f"\n[danger]✗ {e.message}[/danger]")
+            if e.hint:
+                self._console.print(f"  💡 {e.hint}")
+            # fail-safe：快照失败阻止执行
+            self._console.print("[warning]快照创建失败，已阻止执行以保护系统[/warning]")
+            self._write_audit(result="failure", user_input="")
+            self._save()
+            return
 
-        snapshot = SnapshotMeta(
-            snapshot_id=f"snap_{self.state.session_id[-8:]}",
-            timestamp=datetime.now(),
-            operation_summary="; ".join(
-                cmd.command for cmd in (proposal.commands if proposal else [])
-            )[:100],
-            affected_files=affected_files,
-            affected_services=affected_services,
-            backup_path=f"~/.galaxy-diag/snapshots/snap_{self.state.session_id[-8:]}",
-        )
-        self.state.snapshot = snapshot
-        self._console.print(f"[success]✓ 快照已创建: {snapshot.snapshot_id}[/success]")
+        self.state.snapshot = snap_meta
+        self._console.print(f"[success]✓ 快照已创建: {snap_meta.snapshot_id}[/success]")
         self._transition(WorkflowStep.EXECUTING)
 
     def _do_executing(self) -> None:
@@ -792,13 +811,43 @@ class WorkflowEngine:
         用户可见步骤 6/7: 执行
         """
         self._console.print("[info]执行修复...[/info]")
-        # 当前为 stub：模拟执行
-        # 实际实现：调用 safety 受控执行器，逐步执行命令
-        display.print_stub_notice("REQ-D", "修复执行")
 
-        # stub: 模拟成功
-        self._console.print("[success]✓ 修复执行完成（模拟）[/success]")
-        self._transition(WorkflowStep.VERIFYING)
+        proposal = self.state.fix
+        exec_result = executor.run(proposal)
+
+        # 展示执行输出
+        if exec_result.output:
+            for line in exec_result.output.split("\n"):
+                self._console.print(f"  {line}")
+
+        if exec_result.success:
+            self._console.print("[success]✓ 修复执行完成[/success]")
+            self._write_audit(
+                result="success",
+                user_input="",
+                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+            )
+            self._transition(WorkflowStep.VERIFYING)
+        else:
+            # 执行失败 → 自动回滚
+            self._console.print(
+                f"\n[danger]✗ 修复执行失败（步骤 {exec_result.failed_step}），开始自动回滚...[/danger]"
+            )
+            if self.state.snapshot:
+                try:
+                    rb_result = snapshot.rollback(self.state.snapshot.snapshot_id)
+                    self._console.print(f"[warning]⚠ 已从快照回滚: {rb_result.message}[/warning]")
+                except GalaxyDiagError as e:
+                    self._console.print(f"[danger]✗ 回滚失败: {e.message}，请人工介入[/danger]")
+            else:
+                self._console.print("[danger]✗ 无可用快照，无法回滚，请人工介入[/danger]")
+
+            self._write_audit(
+                result="rollback",
+                user_input="",
+                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+            )
+            self._mark_rollback(f"执行失败于步骤 {exec_result.failed_step}")
 
     def _do_verifying(self) -> None:
         """VERIFYING: 结果验证
@@ -873,6 +922,33 @@ class WorkflowEngine:
     def _save(self) -> None:
         """持久化当前状态"""
         save_state(self.state)
+
+    def _write_audit(
+        self,
+        *,
+        result: str,
+        user_input: str = "",
+        snapshot_id: str | None = None,
+    ) -> None:
+        """写入审计日志的便捷方法
+
+        自动填充 session_id / action / llm_basis 等字段。
+        审计写入失败不阻塞工作流（仅告警）。
+        """
+        action = f"工作流步骤: {STEP_LABELS.get(self.state.current_step, self.state.current_step.value)}"
+        llm_basis = ""
+        if self.state.diagnosis:
+            llm_basis = self.state.diagnosis.root_cause[:200]
+
+        record = audit.build_record(
+            session_id=self.state.session_id,
+            action=action,
+            result=result,
+            user_input=user_input,
+            llm_basis=llm_basis,
+            snapshot_id=snapshot_id,
+        )
+        audit.write_audit(record)
 
     # ===== 辅助方法 =====
 

@@ -1,7 +1,7 @@
 """galaxy-diag audit-log — 审计日志查询
 
 对应需求: REQ-E-04
-当前为 stub：展示框架可用 + 示例输出格式。
+调用 safety.audit.query_audit 查询审计日志并渲染。
 """
 
 from __future__ import annotations
@@ -9,76 +9,66 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-from galaxy_diag.shared.types import AuditRecord
-from galaxy_diag.workflow.cli.display import get_console, print_audit_records, print_stub_notice
+from galaxy_diag.safety import audit as audit_mod
+from galaxy_diag.workflow.cli.display import get_console, print_audit_records
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
     sub = subparsers.add_parser(
         "audit-log",
         help="审计日志查询 (REQ-E-04)",
-        description="查询操作审计日志，所有操作可追溯",
+        description="查询操作留痕记录（审计日志）",
     )
     sub.add_argument(
         "--session",
-        metavar="ID",
-        help="按会话筛选",
+        "-s",
+        dest="session_id",
+        help="按会话 ID 过滤",
     )
     sub.add_argument(
         "--limit",
+        "-n",
         type=int,
-        default=20,
-        metavar="N",
-        help="显示最近 N 条 (默认: 20)",
+        default=50,
+        help="最多返回记录数（默认 50）",
     )
     sub.add_argument(
         "--since",
-        metavar="DATETIME",
-        help="起始时间 (如 '2026-08-05 14:00:00')",
+        help="只返回此时间之后的记录（ISO 格式，如 2026-08-14）",
     )
-    sub.set_defaults(callback=handle)
+    sub.set_defaults(func=cmd_audit_log)
 
 
-def handle(args: argparse.Namespace) -> None:
-    """audit-log 子命令回调"""
+def cmd_audit_log(args: argparse.Namespace) -> None:
+    """查询审计日志"""
     console = get_console()
 
-    # 打印 stub 提示
-    print_stub_notice("REQ-E-04", "审计日志查询")
+    since_dt: datetime | None = None
+    if args.since:
+        try:
+            # 支持日期和完整时间戳
+            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    since_dt = datetime.strptime(args.since, fmt)
+                    break
+                except ValueError:
+                    continue
+            if since_dt is None:
+                # 尝试 ISO 格式（含时区等）
+                since_dt = datetime.fromisoformat(args.since)
+        except ValueError:
+            console.print(f"[danger]无效的时间格式: {args.since}[/danger]")
+            console.print("[dim]  支持格式: 2026-08-14 或 2026-08-14 12:00:00[/dim]")
+            return
 
-    # mock 数据
-    mock_records = [
-        AuditRecord(
-            timestamp=datetime(2026, 8, 5, 14, 30, 0),
-            session_id="sess_20260805_001",
-            operator="admin",
-            action="modprobe vmw_pvscsi",
-            result="success",
-            llm_basis="基于 dmesg 日志中 pvscsi 设备未识别的警告",
-            snapshot_id="snap_20260805_001",
-            user_input="y",
-        ),
-        AuditRecord(
-            timestamp=datetime(2026, 8, 5, 15, 10, 0),
-            session_id="sess_20260805_001",
-            operator="admin",
-            action="mount -t ext4 /dev/sdb1 /data",
-            result="rejected",
-            llm_basis="诊断结论为推测，磁盘设备路径未确认",
-            snapshot_id=None,
-            user_input="N",
-        ),
-        AuditRecord(
-            timestamp=datetime(2026, 8, 5, 15, 12, 0),
-            session_id="sess_20260805_001",
-            operator="admin",
-            action="mount -t ext4 /dev/sdb1 /data",
-            result="success",
-            llm_basis="二次确认后用户手动修正设备路径为 /dev/sdc1",
-            snapshot_id="snap_20260805_002",
-            user_input="y",
-        ),
-    ]
+    records = audit_mod.query_audit(
+        session_id=args.session_id,
+        limit=args.limit,
+        since=since_dt,
+    )
 
-    console.print("\n[dim]--- 以下为示例输出（mock 数据）---[/dim]\n")
-    print_audit_records(mock_records)
+    if not records:
+        console.print("[dim]暂无审计日志记录[/dim]")
+        return
+
+    print_audit_records(records)
