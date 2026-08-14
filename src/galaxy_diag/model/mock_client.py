@@ -151,8 +151,11 @@ class MockModelAdapter:
         根据诊断结论和环境类型返回合理的修复建议。
         """
         # 判断环境类型
-        if "容器" in full_text or "container" in full_text.lower() or "kubectl" in full_text:
-            # 容器环境：CNI 修复
+        is_container = "容器" in full_text or "container" in full_text.lower()
+        is_k8s = "kubectl" in full_text or "kubernetes" in full_text.lower() or "k8s" in full_text.lower()
+
+        if is_container and is_k8s:
+            # Kubernetes 容器环境：CNI 修复
             response = {
                 "steps": [
                     {
@@ -180,6 +183,36 @@ class MockModelAdapter:
                 "script_language": "bash",
                 "risk_notes": ["重启 CNI 期间集群网络不可用，建议在维护窗口操作"],
                 "impact_scope": "重启 CNI DaemonSet，期间容器网络中断约 30-60 秒",
+            }
+        elif is_container and not is_k8s:
+            # Docker 容器环境：容器异常修复
+            response = {
+                "steps": [
+                    {
+                        "command": "docker logs <CONTAINER_NAME> --tail 100",
+                        "description": "查看异常容器日志",
+                        "risk_note": "只读操作，无风险",
+                        "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                        "is_verification": True,
+                    },
+                    {
+                        "command": "docker restart <CONTAINER_NAME>",
+                        "description": "重启异常容器",
+                        "risk_note": "重启期间该容器提供的服务不可用",
+                        "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                        "is_verification": False,
+                    },
+                    {
+                        "command": "docker ps --filter name=<CONTAINER_NAME>",
+                        "description": "验证容器已恢复运行",
+                        "risk_note": "只读操作，无风险",
+                        "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                        "is_verification": True,
+                    },
+                ],
+                "script_language": "bash",
+                "risk_notes": ["重启容器期间相关服务不可用"],
+                "impact_scope": "重启 galaxy-api 容器，期间 API 服务中断约 5-10 秒",
             }
         elif "磁盘" in full_text or "存储" in full_text or "pvscsi" in full_text.lower():
             # VM/存储环境：驱动加载修复

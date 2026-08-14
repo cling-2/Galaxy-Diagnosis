@@ -154,7 +154,7 @@ def _check_env_compatibility(
     """环境兼容性检测
 
     检测与环境不兼容的操作：
-    - 容器环境使用 systemctl / modprobe → CRITICAL
+    - 容器环境使用 systemctl / kubectl / crictl / modprobe → CRITICAL
     - VM/裸金属使用 kubectl / crictl → WARNING
     - VM 环境加载内核模块 → WARNING
     """
@@ -168,7 +168,9 @@ def _check_env_compatibility(
     # 容器环境不兼容命令
     if env_type == EnvironmentType.CONTAINER:
         container_incompatible = [
-            (r"\bsystemctl\b", "容器环境通常不运行 systemd，应使用 kubectl/crictl"),
+            (r"\bsystemctl\b", "容器环境通常不运行 systemd，应使用 docker/service 命令"),
+            (r"\bkubectl\b", "容器环境通常不含 kubectl，应使用 docker �4命令"),
+            (r"\bcrictl\b", "容器环境通常不含 crictl，应使用 docker 命令"),
             (r"\bmodprobe\b", "容器内无法加载内核模块，需在宿主机操作"),
             (r"\bblkid\b", "容器内无法直接访问块设备，需在宿主机操作"),
             (r"\bhwinfo\b", "容器内无法获取完整硬件信息"),
