@@ -9,9 +9,12 @@ llm:
   max_retries: 3
   max_tokens: 1024                          # 最大输出 token 数，防止无限生成
 
-hardware:
-  min_cpu_cores: 4
-  min_ram_gb: 8.0
-  min_gpu_vram_gb: 6.0                     # GPU 存在时才检查
-  min_disk_gb: 10.0
-  gpu_required: false                      # GPU 可选，无 GPU 以 CPU 模式运行
+# hardware 段默认根据 llm.model 的参数量自动推导（见 src/galaxy_diag/config/model_profile.py）。
+# 例如 qwen3:1.7b → 2核/4GB内存/1.94GB显存/3.5GB磁盘；qwen3:8b → 8核/7.4GB/5.4GB/9.2GB。
+# 如需手动覆盖某项，取消注释并填写（显式值优先于自动推导）：
+# hardware:
+#   min_cpu_cores: 4
+#   min_ram_gb: 6.0
+#   min_gpu_vram_gb: 6.0
+#   min_disk_gb: 10.0
+#   gpu_required: false

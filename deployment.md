@@ -7,12 +7,14 @@
 | 项目 | 要求 |
 |------|------|
 | 操作系统 | Ubuntu 22.04 x86_64（或其他 Linux x86_64） |
-| CPU | 4 核及以上 |
-| 内存 | 8 GB 及以上 |
+| CPU | 4 核及以上（小模型 1.5B–3B 可 2 核） |
+| 内存 | 8 GB 及以上（小模型可 4 GB） |
 | 磁盘 | 10 GB 及以上可用空间 |
 | GPU | 可选（无 GPU 以 CPU 模式运行，推理速度较慢） |
 | 网络 | 无公网出站要求；内网可用 |
 | Python | 3.10 及以上 |
+
+> 上表为默认模型（约 8B）的推荐配置。**实际最低要求根据 `config.yaml` 中 `llm.model` 的参数量自动推导**（见 `src/galaxy_diag/config/model_profile.py`）：如 `qwen3:1.7b` → 2核/4GB/1.94GB显存/3.5GB磁盘；`qwen3:8b` → 8核/7.4GB/5.4GB/9.2GB。如需固定某项要求，可在 `config.yaml` 显式配置 `hardware` 段（显式值优先于自动推导）。
 
 ### 客户机需预装的系统依赖
 
@@ -109,6 +111,8 @@ source venv/bin/activate
 galaxy-diag
 ```
 
+> 启动时自动执行硬件资源预检（REQ-A-01 验收标准 6）：检测 CPU 核数、内存、磁盘、GPU 显存是否满足最低要求，不满足时打印差距表并**拒绝启动**。需要绕过时用 `galaxy-diag --skip-precheck`（调试用）。
+
 预期输出：
 
 ```
@@ -140,7 +144,8 @@ Galaxy-Diag — 银河平台部署问题定位工具
 ### Step 4：重启验证
 
 ```bash
-# 重启系统后确认无需重新导入模型
+# 重启系统后确认无需重新导入模型（REQ-A-01 验收标准 3）
+# Ollama 模型存储在 /var/lib/ollama（持久化目录），重启后自动加载
 sudo reboot
 
 # 重启后 Ollama 服务自动启动（如果已 enable）

@@ -18,7 +18,9 @@ import sys
 if not os.environ.get("OLLAMA_LOG_LEVEL"):
     os.environ["OLLAMA_LOG_LEVEL"] = "ERROR"
 
-from galaxy_diag.workflow.cli.display import get_console, init_console, print_header
+from galaxy_diag.config.settings import load_config
+from galaxy_diag.model.precheck import HardwarePrechecker
+from galaxy_diag.workflow.cli.display import get_console, init_console, print_header, print_precheck_result
 
 # ===== 子命令注册表 =====
 
@@ -65,6 +67,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="禁用颜色输出 (等同 NO_COLOR=1)",
     )
     parser.add_argument(
+        "--skip-precheck",
+        action="store_true",
+        help="跳过硬件资源预检 (调试/CI 用，不推荐在生产环境使用)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="%(prog)s 0.1.0",
@@ -78,6 +85,39 @@ def _build_parser() -> argparse.ArgumentParser:
     _register_commands(subparsers)
 
     return parser
+
+
+def _run_precheck(*, skip: bool, config_path: str | None) -> None:
+    """启动前硬件资源预检 (REQ-A-01 验收标准 6)
+
+    检测 CPU 核数、内存、磁盘、GPU 显存是否满足最低要求。
+    不满足时打印差距提示并拒绝启动 (sys.exit(1))。
+    预检只读 /proc、shutil、nvidia-smi，零网络、零 LLM，符合离线约束。
+
+    Args:
+        skip: True 时跳过预检（--skip-precheck，调试/CI 用）
+        config_path: 配置文件路径（用于读取 hardware 最低要求配置）
+    """
+    if skip:
+        return
+
+    console = get_console()
+
+    try:
+        config = load_config(config_path)
+        result = HardwarePrechecker(config.hardware).check()
+        print_precheck_result(result)
+        if not result.passed:
+            console.print("\n[danger]✗ 硬件资源不满足最低要求，拒绝启动。[/danger]")
+            console.print("[dim]  使用 --skip-precheck 可跳过预检（不推荐）[/dim]")
+            console.print("[dim]  请升级硬件后重试，参考最低配置见 deployment.md[/dim]")
+            sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        # 预检本身异常不应阻断启动（对齐任务书"错误处理不吞"——打印但不致命阻断，
+        # 让用户能在预检故障时继续使用工具）
+        console.print(f"[warning]⚠ 硬件预检异常，已跳过: {e}[/warning]")
 
 
 def main() -> None:
@@ -103,6 +143,10 @@ def main() -> None:
         parser.print_help()
         console.print("")  # 尾部空行
         return
+
+    # 启动前硬件资源预检（子命令分发前执行；仅对实际运行的子命令触发，
+    # --help 等不走此分支）
+    _run_precheck(skip=args.skip_precheck, config_path=args.config)
 
     # 分发到子命令回调
     try:

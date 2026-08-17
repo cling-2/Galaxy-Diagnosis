@@ -7,11 +7,13 @@
 """
 
 import os
+import dataclasses
 from typing import Any
 
 import yaml
 
 from galaxy_diag.config.defaults import AppConfig, LLMConfig, HardwareRequirement
+from galaxy_diag.config.model_profile import derive_hardware_requirement
 from galaxy_diag.shared.errors import ConfigError
 
 
@@ -117,7 +119,17 @@ def load_config(config_path: str | None = None) -> AppConfig:
         hw_raw = raw.get("hardware", {})
 
         llm_config = LLMConfig(**_filter_known_fields(llm_raw, LLMConfig))
-        hw_config = HardwareRequirement(**_filter_known_fields(hw_raw, HardwareRequirement))
+
+        # 硬件要求：模型推导为基础值，用户显式 hardware 字段覆盖
+        # 优先级：用户显式字段（含环境变量写入 hw_raw 的）> 模型推导值 > 保守默认
+        derived_hw = derive_hardware_requirement(llm_config.model)
+        hw_kwargs: dict[str, Any] = {}
+        for f in dataclasses.fields(HardwareRequirement):
+            if f.name in hw_raw:
+                hw_kwargs[f.name] = hw_raw[f.name]            # 用户显式值优先
+            else:
+                hw_kwargs[f.name] = getattr(derived_hw, f.name)  # 未配置走推导
+        hw_config = HardwareRequirement(**hw_kwargs)
 
         return AppConfig(llm=llm_config, hardware=hw_config)
     except TypeError as e:
@@ -129,7 +141,6 @@ def load_config(config_path: str | None = None) -> AppConfig:
 
 def _filter_known_fields(raw: dict, cls: type) -> dict:
     """过滤掉数据类中不存在的字段，防止意外关键字参数"""
-    import dataclasses
     if dataclasses.is_dataclass(cls):
         known = {f.name for f in dataclasses.fields(cls)}
         return {k: v for k, v in raw.items() if k in known}

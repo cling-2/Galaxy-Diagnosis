@@ -24,6 +24,7 @@ from galaxy_diag.shared.constants import (
 )
 
 if TYPE_CHECKING:
+    from galaxy_diag.model.precheck import PrecheckResult
     from galaxy_diag.shared.types import (
         AuditRecord,
         DiagnosisResult,
@@ -555,3 +556,46 @@ def print_next_steps(proposal: FixProposal, snapshot_id: str | None) -> None:
         console.print(
             "\n[warning]⚠ 本次修复未创建快照，无法一键回滚，请人工评估系统状态后决定下一步[/warning]"
         )
+
+
+def print_precheck_result(result: PrecheckResult) -> None:
+    """渲染硬件资源预检结果 (REQ-A-01 验收标准 6)
+
+    使用 Rich Table 对齐 deployment.md 预期输出格式。
+
+    Args:
+        result: 预检汇总（HardwarePrechecker.check() 产出）
+    """
+    console = get_console()
+
+    console.print("[heading]🔍 硬件资源预检[/heading]")
+
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("项目", width=10)
+    table.add_column("最低要求", width=12)
+    table.add_column("实际", width=12)
+    table.add_column("状态", width=4)
+
+    for item in result.items:
+        status = "[success]✓[/success]" if item.passed else "[danger]✗[/danger]"
+        required_str = f"{item.required} {item.unit}"
+        # 实际值格式化：CPU 用整数，其他保留 1 位小数
+        if item.unit == "核":
+            actual_str = f"{int(item.actual)} {item.unit}"
+        else:
+            actual_str = f"{item.actual:.1f} {item.unit}"
+        table.add_row(item.name, required_str, actual_str, status)
+
+    console.print(table)
+
+    # 打印各项目的额外说明（如 GPU 未检测到的提示）
+    for item in result.items:
+        if item.note:
+            style = "warning" if not item.passed else "dim"
+            console.print(f"  [{style}]{item.name}: {item.note}[/{style}]")
+
+    # 汇总行
+    if result.passed:
+        console.print("\n[success]  ✓ 硬件预检通过[/success]")
+    else:
+        console.print(f"\n[danger]  ✗ {result.summary.split(chr(10))[0]}[/danger]")

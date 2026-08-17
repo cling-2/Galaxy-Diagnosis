@@ -87,10 +87,12 @@ class TestLoadConfigYAML:
         assert cfg.hardware.min_cpu_cores == 4  # 默认值
 
     def test_load_nonexistent_file_uses_defaults(self, tmp_path):
-        """配置文件不存在时使用默认值"""
+        """配置文件不存在时使用默认值（model 默认 qwen3:8b，hardware 按模型推导）"""
         cfg = load_config(str(tmp_path / "nonexistent.yaml"))
         assert cfg.llm.model == "qwen3:8b"
-        assert cfg.hardware.min_cpu_cores == 4
+        # 8B 模型推导：cpu=8, vram≈5.4GB（非固定默认值 4/6）
+        assert cfg.hardware.min_cpu_cores == 8
+        assert cfg.hardware.min_gpu_vram_gb == 5.4
 
     def test_load_invalid_yaml_raises_config_error(self, tmp_path):
         """YAML 语法错误抛 ConfigError"""
