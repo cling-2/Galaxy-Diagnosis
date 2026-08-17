@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         EnvInfo,
         FixProposal,
         SnapshotMeta,
+        VerifyResult,
     )
 
 # ===== 样式常量 =====
@@ -480,3 +481,77 @@ def print_snapshot_list(metas: list[SnapshotMeta]) -> None:
         table.add_row(meta.snapshot_id, ts, meta.operation_summary)
 
     console.print(table)
+
+
+def print_verify_result(result: VerifyResult) -> None:
+    """渲染验证结果
+
+    Args:
+        result: 验证结果（safety/verifier.py verify() 产出）
+    """
+    console = get_console()
+
+    if result.total_steps == 0:
+        console.print("[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]")
+        return
+
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("指标", width=12)
+    table.add_column("值", min_width=20)
+
+    status_text = "[success]通过[/success]" if result.success else "[danger]失败[/danger]"
+    table.add_row("结果", status_text)
+    table.add_row("通过步骤", f"{result.passed_steps}/{result.total_steps}")
+    if not result.success:
+        table.add_row("失败步骤", str(result.failed_step))
+        table.add_row("失败说明", result.failed_description)
+
+    console.print(Panel(table, title="[heading]🔬 验证结果[/heading]", border_style="info", padding=(1, 2)))
+
+
+def print_next_steps(proposal: FixProposal, snapshot_id: str | None) -> None:
+    """渲染验证失败后的进一步排查建议 + 一键回滚提示
+
+    Args:
+        proposal: 修复建议（用于提示补充验证命令信息）
+        snapshot_id: 快照 ID（用于一键回滚命令），无快照时为 None
+    """
+    console = get_console()
+
+    lines: list[str] = []
+    lines.append("[dim]本次修复未解决问题，建议按以下顺序排查：[/dim]\n")
+    lines.append("  [info]1.[/info] 检查验证命令的输出日志，确认具体失败原因")
+    if snapshot_id:
+        lines.append(
+            f"  [info]2.[/info] 使用 [warning]galaxy-diag snapshot rollback {snapshot_id}[/warning] 一键回滚到修复前状态"
+        )
+        lines.append("  [info]3.[/info] 回滚后，补充以下信息重新运行诊断：")
+        rollback_note = "回滚后重新运行"
+    else:
+        lines.append("  [info]2.[/info] 补充以下信息重新运行诊断（无可用快照，需人工确认当前系统状态）：")
+        lines.append("  [info]3.[/info] 重新运行诊断：")
+        rollback_note = "重新运行"
+
+    lines.append("      - 验证命令的完整输出和错误信息")
+    lines.append("      - 修复执行期间系统日志: [dim]journalctl --since \"5 minutes ago\"[/dim]")
+    lines.append("      - 受影响服务的当前状态")
+    lines.append(f"  [info]4.[/info] 重新运行: [info]galaxy-diag run -d \"补充描述\"[/info]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title="[heading]🔧 进一步排查建议[/heading]",
+        border_style="warning",
+        padding=(1, 2),
+    ))
+
+    # 一键回滚提示
+    if snapshot_id:
+        console.print(
+            "\n[warning]⚠ 回滚提示:[/warning]\n"
+            f"  执行 [warning]galaxy-diag snapshot rollback {snapshot_id}[/warning]\n"
+            f"  可恢复到修复前的系统状态"
+        )
+    else:
+        console.print(
+            "\n[warning]⚠ 本次修复未创建快照，无法一键回滚，请人工评估系统状态后决定下一步[/warning]"
+        )

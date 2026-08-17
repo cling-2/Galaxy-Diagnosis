@@ -803,17 +803,30 @@ class WorkflowEngine:
         self._transition(WorkflowStep.EXECUTING)
 
     def _do_executing(self) -> None:
-        """EXECUTING: 执行修复
+        """EXECUTING: 执行修复（仅非验证命令）
 
-        按步骤执行修复命令并监控。
-        当前为 stub：模拟执行成功。
+        只执行 is_verification=False 的修复命令。
+        验证命令（is_verification=True）留在 proposal.commands 中，
+        由步骤 7/7 VERIFYING 消费。
 
         用户可见步骤 6/7: 执行
         """
         self._console.print("[info]执行修复...[/info]")
 
         proposal = self.state.fix
-        exec_result = executor.run(proposal)
+
+        # 过滤出修复命令（不含验证步骤），验证命令留给 VERIFYING
+        fix_commands = [cmd for cmd in proposal.commands if not cmd.is_verification]
+        fix_only_proposal = FixProposal(
+            commands=fix_commands,
+            script=proposal.script,
+            script_language=proposal.script_language,
+            risk_notes=proposal.risk_notes,
+            impact_scope=proposal.impact_scope,
+            source=proposal.source,
+        )
+
+        exec_result = executor.run(fix_only_proposal)
 
         # 展示执行输出
         if exec_result.output:
@@ -852,19 +865,54 @@ class WorkflowEngine:
     def _do_verifying(self) -> None:
         """VERIFYING: 结果验证
 
-        验证修复是否生效。
-        当前为 stub：模拟验证成功。
+        执行修复建议中的验证命令（is_verification=True），判定修复是否生效。
+        验证通过 → 标记完成。
+        验证失败 → 展示失败详情 + 进一步方案 + 一键回滚提示，标记完成。
 
         用户可见步骤 7/7: 结果验证
         """
-        self._console.print("[info]验证修复结果...[/info]")
-        # 当前为 stub：模拟验证成功
-        # 实际实现：调用 diagnoser 验证或执行检查命令
-        display.print_stub_notice("REQ-C", "结果验证")
+        from galaxy_diag.safety import verifier
 
-        # stub: 模拟成功
-        self._console.print("[success]✓ 修复验证通过（模拟）[/success]")
-        self._mark_done("修复验证通过")
+        self._console.print("[info]验证修复结果...[/info]")
+
+        proposal = self.state.fix
+        verify_result = verifier.verify(proposal)
+
+        # 展示验证输出
+        if verify_result.output:
+            for line in verify_result.output.split("\n"):
+                self._console.print(f"  {line}")
+
+        if verify_result.success:
+            if verify_result.total_steps == 0:
+                # 无验证命令：保守通过但提示人工确认
+                self._console.print(
+                    "[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]"
+                )
+            else:
+                self._console.print(
+                    f"[success]✓ 修复验证通过: {verify_result.passed_steps}/{verify_result.total_steps} 步骤成功[/success]"
+                )
+            self._write_audit(result="success")
+            self._mark_done("修复验证通过")
+        else:
+            # 验证失败：展示失败详情 + 进一步方案 + 回滚提示
+            self._console.print(
+                f"\n[danger]✗ 修复验证失败: 步骤 {verify_result.failed_step} "
+                f"\"{verify_result.failed_description}\" 返回非零退出码[/danger]"
+            )
+            self._console.print(
+                f"  [dim]验证结果: {verify_result.passed_steps}/{verify_result.total_steps} 步骤通过[/dim]"
+            )
+
+            # 展示进一步解决方案概要 + 回滚提示
+            display.print_next_steps(
+                proposal=proposal,
+                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+            )
+
+            self._write_audit(result="verify_failed")
+            self._mark_done("修复验证未通过")
 
     # ===== 状态转换 =====
 

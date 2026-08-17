@@ -294,7 +294,7 @@ class AuditRecord:
     session_id: str = ""
     operator: str = ""
     action: str = ""
-    result: Literal["confirmed", "success", "failure", "rollback", "rejected"] = "success"
+    result: Literal["confirmed", "success", "failure", "rollback", "rejected", "verify_failed"] = "success"
     llm_basis: str = ""  # LLM 分析依据摘要
     snapshot_id: str | None = None  # 关联的快照 ID
     user_input: str = ""  # 用户确认输入（y / N / CONFIRM xxx）
@@ -350,6 +350,22 @@ class ExecuteResult:
     success: bool = False
     output: str = ""
     failed_step: int = -1  # 失败的步骤序号（1-based），-1 表示未失败
+
+
+@dataclass
+class VerifyResult:
+    """验证结果（safety/verifier.py verify 产出）
+
+    与 ExecuteResult 对称：executor 执行修复命令，verifier 执行验证命令。
+    验证命令均为只读操作（is_verification=True），不影响系统状态。
+    """
+
+    success: bool = False
+    output: str = ""              # 各验证命令的输出汇总
+    failed_step: int = -1         # 失败的验证步骤序号（1-based），-1 表示全部通过
+    failed_description: str = ""  # 失败步骤的 description
+    total_steps: int = 0          # 总验证步骤数
+    passed_steps: int = 0         # 通过的步骤数
 
 
 # ===== 工作流 =====

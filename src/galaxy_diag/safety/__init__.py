@@ -16,6 +16,7 @@ from galaxy_diag.safety.executor import run as execute
 from galaxy_diag.safety.patterns import DANGER_PATTERNS
 from galaxy_diag.safety.review import needs_confirm, review_confirm
 from galaxy_diag.safety.snapshot import create_snapshot, list_snapshots, rollback
+from galaxy_diag.safety.verifier import verify
 
 __all__ = [
     # E-02 危险防护
@@ -30,6 +31,8 @@ __all__ = [
     "list_snapshots",
     # 执行
     "execute",
+    # 验证
+    "verify",
     # E-04 审计日志
     "write_audit",
     "query_audit",

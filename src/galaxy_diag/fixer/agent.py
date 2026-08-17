@@ -22,10 +22,81 @@ from galaxy_diag.shared.errors import FixerError, ModelCallError
 from galaxy_diag.shared.types import (
     DiagnosisResult,
     EnvInfo,
+    EnvironmentType,
+    ContainerRuntime,
     FixProposal,
     FixSource,
+    FixStep,
     FixSuggestion,
 )
+
+
+def _ensure_verification_step(
+    suggestion: FixSuggestion,
+    env_info: EnvInfo,
+    diagnosis: DiagnosisResult,
+) -> FixSuggestion:
+    """确保 suggestion 至少含一个验证步骤
+
+    若 LLM 未生成 is_verification=True 的步骤，根据环境类型 + 诊断故障范围
+    补一个兜底验证命令，并标记 source=LLM_FALLBACK。
+
+    LLM 正常生成时此逻辑不触发。
+    """
+    if any(s.is_verification for s in suggestion.steps):
+        return suggestion
+
+    # 根据诊断故障范围细化兜底命令
+    scope = (diagnosis.fault_scope or "").lower()
+    env_type = env_info.env_type
+
+    fallback: FixStep
+    if env_type == EnvironmentType.CONTAINER:
+        if env_info.container_runtime == ContainerRuntime.KUBERNETES:
+            fallback = FixStep(
+                command="kubectl get pods -n kube-system",
+                description="验证 Kubernetes Pod 状态",
+                risk_note="只读操作，无风险",
+                parameters={},
+                is_verification=True,
+            )
+        else:
+            fallback = FixStep(
+                command="docker ps",
+                description="验证容器运行状态",
+                risk_note="只读操作，无风险",
+                parameters={},
+                is_verification=True,
+            )
+    elif env_type == EnvironmentType.VM and ("存储" in scope or "磁盘" in scope or "storage" in scope or "disk" in scope):
+        fallback = FixStep(
+            command="lsblk",
+            description="验证磁盘可见性",
+            risk_note="只读操作，无风险",
+            parameters={},
+            is_verification=True,
+        )
+    elif env_type == EnvironmentType.VM and ("网络" in scope or "network" in scope):
+        fallback = FixStep(
+            command="ss -tlnp",
+            description="验证网络端口监听",
+            risk_note="只读操作，无风险",
+            parameters={},
+            is_verification=True,
+        )
+    else:
+        # VM/裸金属 通用
+        fallback = FixStep(
+            command="systemctl status galaxy-* --no-pager",
+            description="验证银河平台服务状态",
+            risk_note="只读操作，无风险",
+            parameters={},
+            is_verification=True,
+        )
+
+    suggestion.steps.append(fallback)
+    suggestion.source = FixSource.LLM_FALLBACK
+    return suggestion
 
 
 def generate(
@@ -71,6 +142,10 @@ def generate(
             suggestion = parse_fix_response(raw_response_retry)
         except (FixerError, ModelCallError):
             suggestion = build_error_fallback("LLM 输出格式异常，无法生成修复建议")
+
+    # 确保至少含一个验证步骤（LLM 漏生成时补兜底，仅在有步骤时生效）
+    if suggestion.steps:
+        suggestion = _ensure_verification_step(suggestion, env_info, diagnosis)
 
     # 3. ERROR_FALLBACK：空步骤列表
     if not suggestion.steps:

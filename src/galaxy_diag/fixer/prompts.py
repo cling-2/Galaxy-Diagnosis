@@ -45,7 +45,7 @@ SYSTEM_PROMPT = """\
 1. command 中必须使用参数占位符（如 <IP>、<MOUNT_POINT>、<SERVICE_NAME>），不得硬编码实际值
 2. 每条步骤必须有 description 和 risk_note，risk_note 不能为空
 3. 风险等级递增：只读验证 < 加载模块 < 修改配置 < 重启服务 < 删除/格式化
-4. 验证步骤放在末尾，is_verification=true，验证命令必须为只读操作（如 lsblk、systemctl status）
+4. **必须至少包含 1 个验证步骤**（is_verification=true），放在 steps 末尾，用于确认修复是否生效。验证命令必须为只读操作（如 lsblk、systemctl status、docker ps、kubectl get）。**缺少验证步骤的输出视为不合格。**
 5. 修复步骤应按依赖顺序排列：先处理前置条件，再执行修复，最后验证
 6. impact_scope 描述操作影响范围，如"影响 3 个挂载点、重启 galaxy-storage 服务"
 7. 不得生成 rm -rf /、mkfs、dd of=/dev/、iptables -F 等危险操作
