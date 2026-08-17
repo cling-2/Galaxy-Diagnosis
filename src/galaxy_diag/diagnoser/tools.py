@@ -172,12 +172,22 @@ def _collect_component_status_k8s(components: "Sequence[str]") -> list[dict]:
 
 
 def _collect_component_status_docker(components: "Sequence[str]") -> list[dict]:
-    rc, stdout, _ = _run_cmd(["docker", "ps", "-a", "--format", "{{.Names}}\\t{{.Status}}"])
-    if rc != 0:
-        raise CollectorToolNotFoundError(
-            "docker ps 失败",
-            hint="请确认 docker daemon 运行中",
-        )
+    """Docker 环境组件状态采集
+
+    优先用 docker ps（宿主机或挂载了 docker.sock 的容器）。
+    docker CLI 不可用时（典型场景：容器内部未挂载 docker.sock），
+    回退到进程树检测（/proc + ps），这是容器内部可靠的方式。
+    """
+    try:
+        rc, stdout, _ = _run_cmd(["docker", "ps", "-a", "--format", "{{.Names}}\\t{{.Status}}"])
+        if rc != 0:
+            raise CollectorToolNotFoundError(
+                "docker ps 失败",
+                hint="请确认 docker daemon 运行中",
+            )
+    except CollectorToolNotFoundError:
+        # 容器内部无 docker CLI / docker.sock → 回退到进程树检测
+        return _collect_component_status_proc(components)
     # 构建容器名→状态映射
     container_map: dict[str, str] = {}
     for line in stdout.splitlines():
@@ -195,6 +205,67 @@ def _collect_component_status_docker(components: "Sequence[str]") -> list[dict]:
             results.append({"name": comp, "status": "running", "detail": "docker: 命名匹配"})
         else:
             results.append({"name": comp, "status": "inactive", "detail": "docker: 未发现容器"})
+    return results
+
+
+def _collect_component_status_proc(components: "Sequence[str]") -> list[dict]:
+    """进程树检测组件状态（容器内部回退方案）
+
+    扫描 /proc/<pid>/cmdline（优先）或 ps aux 输出，匹配 GALAXY_COMPONENTS 中的进程名。
+    这是 Docker 容器内部无 docker CLI 时的可靠检测方式。
+
+    Raises:
+        CollectorToolNotFoundError: ps 不可用且 /proc 不可读
+    """
+    # 优先读 /proc/<pid>/cmdline（无需 ps 命令，容器内必有 /proc）
+    proc_lines: list[str] = []
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            cmdline_path = f"/proc/{entry}/cmdline"
+            try:
+                with open(cmdline_path, "r", errors="replace") as f:
+                    # /proc cmdline 用 \0 分隔参数
+                    cmdline = f.read().replace("\x00", " ").strip()
+                if cmdline:
+                    proc_lines.append(cmdline)
+            except (OSError, PermissionError):
+                continue
+    except (OSError, PermissionError):
+        proc_lines = []
+
+    # /proc 不可读时回退到 ps aux
+    if not proc_lines:
+        try:
+            rc, stdout, _ = _run_cmd(["ps", "aux"])
+            if rc == 0:
+                proc_lines = stdout.splitlines()
+        except CollectorToolNotFoundError:
+            raise CollectorToolNotFoundError(
+                "ps 不可用且 /proc 不可读",
+                hint="容器内无法检测进程，请确认 /proc 挂载",
+            )
+
+    # 合并所有进程命令行用于匹配
+    all_procs_lower = "\n".join(proc_lines).lower()
+    results: list[dict] = []
+    for comp in components:
+        comp_lower = comp.lower()
+        # 匹配包含组件名的进程
+        matching = [p for p in proc_lines if comp_lower in p.lower()]
+        if matching:
+            # 取第一个匹配进程的摘要作为详情
+            detail_proc = matching[0][:80]
+            results.append({
+                "name": comp, "status": "running",
+                "detail": f"proc: {detail_proc}",
+            })
+        else:
+            results.append({
+                "name": comp, "status": "inactive",
+                "detail": "proc: 未发现进程",
+            })
     return results
 
 

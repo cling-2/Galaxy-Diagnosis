@@ -229,7 +229,14 @@ def print_diagnostic_context(ctx: DiagnosticContext) -> None:
     if ctx.system_resources:
         console.print("[heading]💻 系统资源[/heading]")
         for key, value in ctx.system_resources.items():
-            console.print(f"  {key}: {value}")
+            # 多行值（如 disk_usage 是 df 的多行输出）：逐行原样输出保持列对齐，
+            # 不加 key 前缀（df 自身有列头，前缀会破坏列间空格对齐）
+            if isinstance(value, str) and "\n" in value:
+                console.print(f"  {key}:")
+                for line in value.splitlines():
+                    console.print(f"    {line}")
+            else:
+                console.print(f"  {key}: {value}")
         console.print("")
 
     # 网络连通性
@@ -340,11 +347,13 @@ def print_fix_proposal(proposal: FixProposal) -> None:
     # 命令步骤表格
     if proposal.commands:
         console.print("[heading]🔧 修复步骤[/heading]")
+        # 风险列用 ratio=2 让 Rich 分配更多宽度，不再硬截断
+        # （REQ-D-01 验收标准 7：风险提示需完整可见）
         table = Table(show_header=True, header_style="bold", pad_edge=False)
         table.add_column("#", width=3)
-        table.add_column("命令", min_width=30)
-        table.add_column("说明", min_width=15)
-        table.add_column("风险", width=12)
+        table.add_column("命令", min_width=25)
+        table.add_column("说明", min_width=10)
+        table.add_column("风险", min_width=16, ratio=2, overflow="fold")
         table.add_column("类型", width=6)
 
         for i, cmd in enumerate(proposal.commands, 1):
