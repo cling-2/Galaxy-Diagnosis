@@ -36,7 +36,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--since",
         help="只返回此时间之后的记录（ISO 格式，如 2026-08-14）",
     )
-    sub.set_defaults(func=cmd_audit_log)
+    sub.set_defaults(callback=cmd_audit_log)
 
 
 def cmd_audit_log(args: argparse.Namespace) -> None:

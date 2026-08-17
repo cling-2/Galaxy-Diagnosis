@@ -44,6 +44,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default="table",
         help="输出格式（默认 table）",
     )
+    sub.set_defaults(callback=handle)
 
 
 def handle(args: argparse.Namespace) -> None:

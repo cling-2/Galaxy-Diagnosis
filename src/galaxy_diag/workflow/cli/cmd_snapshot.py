@@ -32,17 +32,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
     # list
     sub_list = snapshot_sub.add_parser("list", help="列出所有快照")
-    sub_list.set_defaults(func=cmd_list)
+    sub_list.set_defaults(callback=cmd_list)
 
     # show
     sub_show = snapshot_sub.add_parser("show", help="展示快照详情")
     sub_show.add_argument("snapshot_id", help="快照 ID")
-    sub_show.set_defaults(func=cmd_show)
+    sub_show.set_defaults(callback=cmd_show)
 
     # rollback
     sub_rb = snapshot_sub.add_parser("rollback", help="一键回滚到快照")
     sub_rb.add_argument("snapshot_id", help="快照 ID")
-    sub_rb.set_defaults(func=cmd_rollback)
+    sub_rb.set_defaults(callback=cmd_rollback)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
