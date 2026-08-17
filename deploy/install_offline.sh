@@ -13,6 +13,10 @@
 # 虚拟环境：
 #   脚本会自动检测并创建 Python 虚拟环境（项目目录下的 venv/）。
 #   后续运行时需先激活：source venv/bin/activate
+#
+# 模型导入：
+#   遍历 deploy/offline/*.gguf，按文件名自动推导 Ollama 注册名并导入。
+#   放几个 gguf 就导入几个，名字与文件实际参数量一致，不硬编码。
 
 set -euo pipefail
 
@@ -137,6 +141,9 @@ User=ollama
 Group=ollama
 ExecStart=/usr/local/bin/ollama serve
 Environment="OLLAMA_HOST=127.0.0.1:11434"
+Environment="OLLAMA_FLASH_ATTENTION=1"
+Environment="OLLAMA_KEEP_ALIVE=30m"
+Environment="OLLAMA_NUM_PARALLEL=1"
 Restart=always
 RestartSec=3
 
@@ -170,59 +177,93 @@ SVCEOF
 fi
 
 # ---------- 2. 导入模型 ----------
-# 确保 Ollama 服务正在运行（Docker 每次新容器进程不保留，需重新启动）     
+# 确保 Ollama 服务正在运行（Docker 每次新容器进程不保留，需重新启动）
 if ! curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
-    echo "    Ollama 服务未运行，正在启动..."                             
-    OLLAMA_HOST=127.0.0.1:11434 \                                         
-    OLLAMA_FLASH_ATTENTION=1 \                                            
-    OLLAMA_KEEP_ALIVE=30m \                                               
-    OLLAMA_NUM_PARALLEL=1 \                                               
-    /usr/local/bin/ollama serve &                                         
-    OLLAMA_PID=$!                                                         
-    sleep 2                                                               
-    if kill -0 "$OLLAMA_PID" 2>/dev/null; then                            
-        ok "Ollama 已启动 (PID=$OLLAMA_PID)"                              
-    else                                                                  
-        fail "Ollama 启动失败"                                            
-        exit 1                                                            
-    fi                                                                    
-else                                                                      
-    ok "Ollama 服务已运行"                                                
+    echo "    Ollama 服务未运行，正在启动..."
+    OLLAMA_HOST=127.0.0.1:11434 \
+    OLLAMA_FLASH_ATTENTION=1 \
+    OLLAMA_KEEP_ALIVE=30m \
+    OLLAMA_NUM_PARALLEL=1 \
+    /usr/local/bin/ollama serve &
+    OLLAMA_PID=$!
+    sleep 2
+    if kill -0 "$OLLAMA_PID" 2>/dev/null; then
+        ok "Ollama 已启动 (PID=$OLLAMA_PID)"
+    else
+        fail "Ollama 启动失败"
+        exit 1
+    fi
+else
+    ok "Ollama 服务已运行"
 fi
+
 echo ""
 echo "==> [2/3] 导入模型..."
 
-# 找到 gguf 文件
-GGUF_FILE=$(ls "$OFFLINE_DIR"/*.gguf 2>/dev/null | head -1)
+# 从 GGUF 文件名自动推导 Ollama 模型注册名
+# 例：Qwen3-8B-Q4_K_M.gguf → qwen3:8b；Qwen3-1.7B-Q8_0.gguf → qwen3:1.7b
+_gguf_to_model_name() {
+    local fname="${1##*/}"  # basename，不依赖外部命令
+    local base="${fname%.gguf}"
+    # 按横杠拆分：Qwen3  8B  Q4_K_M  或  Qwen3  1.7B  Q8_0
+    local IFS='-'
+    local parts=($base)
+    if [ ${#parts[@]} -lt 2 ]; then
+        return 1
+    fi
+    local series="${parts[0],,}"   # qwen3
+    local param="${parts[1],,}"    # 8b / 4b / 1.7b
+    echo "${series}:${param}"
+}
 
-if [ -z "$GGUF_FILE" ]; then
+# 遍历 offline 目录中所有 .gguf 文件，按实际文件名注册（不硬编码参数量）
+GGUF_FILES=()
+while IFS= read -r -d '' f; do
+    GGUF_FILES+=("$f")
+done < <(find "$OFFLINE_DIR" -maxdepth 1 -name '*.gguf' -print0 | sort -z)
+
+if [ ${#GGUF_FILES[@]} -eq 0 ]; then
     fail "未找到模型文件 (*.gguf) in $OFFLINE_DIR"
     echo "💡 请先在有网机器上执行 prepare_offline.sh 下载模型"
     exit 1
 fi
 
-MODEL_NAME="qwen3:8b"
-GGUF_BASENAME=$(basename "$GGUF_FILE")
+ANY_MODEL_IMPORTED=0
+IMPORTED_NAMES=()
+for GGUF_FILE in "${GGUF_FILES[@]}"; do
+    GGUF_BASENAME=$(basename "$GGUF_FILE")
+    MODEL_NAME=$(_gguf_to_model_name "$GGUF_FILE")
+    if [ -z "$MODEL_NAME" ]; then
+        echo "    ⚠ 无法从文件名推导模型名: $GGUF_BASENAME，跳过"
+        continue
+    fi
 
-# 检查模型是否已导入
-if ollama list | grep -q "^$MODEL_NAME"; then
-    ok "模型已存在: $MODEL_NAME"
-else
-    # 生成临时 Modelfile（指向 offline 目录中的 gguf）
-    TMP_MODelfILE=$(mktemp)
-    cat > "$TMP_MODelfILE" <<EOF
+    if ollama list | grep -q "^$MODEL_NAME"; then
+        ok "模型已存在: $MODEL_NAME"
+    else
+        TMP_MODElFILE=$(mktemp)
+        cat > "$TMP_MODElFILE" <<EOF
 FROM $GGUF_FILE
 EOF
-
-    echo "    从 $GGUF_BASENAME 导入模型..."
-    if ollama create "$MODEL_NAME" -f "$TMP_MODelfILE"; then
-        ok "模型导入成功: $MODEL_NAME"
-    else
-        fail "模型导入失败"
-        rm -f "$TMP_MODelfILE"
-        exit 1
+        echo "    从 $GGUF_BASENAME 导入为 $MODEL_NAME ..."
+        if ollama create "$MODEL_NAME" -f "$TMP_MODElFILE"; then
+            ok "模型导入成功: $MODEL_NAME"
+        else
+            fail "模型导入失败: $MODEL_NAME"
+            rm -f "$TMP_MODElFILE"
+            if [ "$ANY_MODEL_IMPORTED" -eq 0 ]; then
+                exit 1
+            fi
+        fi
+        rm -f "$TMP_MODElFILE"
     fi
-    rm -f "$TMP_MODelfILE"
+    ANY_MODEL_IMPORTED=1
+    IMPORTED_NAMES+=("$MODEL_NAME")
+done
+
+if [ "$ANY_MODEL_IMPORTED" -eq 0 ]; then
+    fail "没有成功导入任何模型"
+    exit 1
 fi
 
 # ---------- 3. 安装 Python 依赖 ----------
@@ -270,9 +311,14 @@ echo "  部署完成"
 echo "=============================="
 echo ""
 echo "  Ollama:  $(ollama --version 2>&1 | head -1)"
-echo "  模型:    $MODEL_NAME"
-echo "  依赖:    $(python3 -c 'import openai, httpx, yaml, rich; print(\"OK\")' 2>&1)"
+echo "  模型:    ${IMPORTED_NAMES[*]}"
+echo "  依赖:    $(python3 -c 'import openai, httpx, yaml, rich; print("OK")' 2>&1)"
 echo ""
 echo "下一步："
 echo "  source venv/bin/activate"
 echo "  galaxy-diag        # 或 python3 -m galaxy_diag"
+echo ""
+echo "可用模型（通过 GALAXY_LLM_MODEL 或 config.yaml 切换）："
+for name in "${IMPORTED_NAMES[@]}"; do
+    echo "  - $name"
+done
