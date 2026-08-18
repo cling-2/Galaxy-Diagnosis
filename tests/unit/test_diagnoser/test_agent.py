@@ -129,8 +129,8 @@ class TestDiagnoseJSONParseRetry:
 
 
 class TestDiagnoseJSONParseRetryFails:
-    def test_both_calls_invalid_returns_error_fallback(self):
-        """两次 JSON 解析都失败 → ERROR_FALLBACK"""
+    def test_both_calls_invalid_returns_format_fallback(self):
+        """两次 JSON 解析都失败 → FORMAT_FALLBACK（模型可用但输出格式异常）"""
         ctx = _make_ctx("test")
         env_info = _make_env_info()
         mock_adapter = MagicMock()
@@ -138,5 +138,5 @@ class TestDiagnoseJSONParseRetryFails:
 
         result = diagnose("test", env_info, ctx, mock_adapter)
 
-        assert result.diagnosis_source == DiagnosisSource.ERROR_FALLBACK
+        assert result.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK
         assert result.confidence == Confidence.INSUFFICIENT

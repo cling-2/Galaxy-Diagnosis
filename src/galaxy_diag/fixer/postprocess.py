@@ -61,7 +61,7 @@ _READ_ONLY_PREFIXES = (
 def _extract_json(text: str) -> dict | None:
     """从 LLM 输出中提取 JSON
 
-    三策略：直接解析 → markdown code block → 首个 {...} 块
+    策略（按优先级）：直接解析 → markdown code block → 大括号配对深度嵌套提取
     """
     # 策略 1：直接解析
     text = text.strip()
@@ -82,15 +82,25 @@ def _extract_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # 策略 3：提取首个 {...} 块
-    brace_match = re.search(r'\{.*\}', text, re.DOTALL)
-    if brace_match:
-        try:
-            data = json.loads(brace_match.group())
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
+    # 策略 3：基于大括号配对的深度嵌套提取
+    #    小模型常在 JSON 前后输出思考过程，导致 JSON 被大量文本包裹。
+    first_brace = text.find("{")
+    if first_brace != -1:
+        depth = 0
+        for i in range(first_brace, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[first_brace : i + 1]
+                    try:
+                        data = json.loads(candidate)
+                        if isinstance(data, dict):
+                            return data
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
     return None
 
@@ -277,4 +287,19 @@ def build_error_fallback(error_message: str) -> FixSuggestion:
         risk_notes=[f"修复建议生成失败: {error_message}"],
         impact_scope="无法生成修复建议",
         source=FixSource.ERROR_FALLBACK,
+    )
+
+
+def build_format_fallback(error_message: str) -> FixSuggestion:
+    """构建 LLM 输出格式异常的降级兜底结果
+
+    区别于 ERROR_FALLBACK：模型实际可用，只是没遵循 JSON 格式要求。
+    source=FORMAT_FALLBACK。
+    """
+    return FixSuggestion(
+        steps=[],
+        script_language=None,
+        risk_notes=[f"模型输出格式异常: {error_message}"],
+        impact_scope="模型未能生成结构化修复建议",
+        source=FixSource.FORMAT_FALLBACK,
     )

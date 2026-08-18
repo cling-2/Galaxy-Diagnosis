@@ -27,10 +27,10 @@ from galaxy_diag.shared.types import (
 def _extract_json(text: str) -> dict | None:
     """从 LLM 输出中提取 JSON 对象
 
-    策略：
+    策略（按优先级尝试）：
     1. 直接解析整个文本
     2. 从 markdown code block 中提取
-    3. 找第一个 {...} 块
+    3. 基于大括号配对的深度嵌套提取（处理 LLM 在 JSON 前后输出思考文本的情况）
     """
     # 1. 直接解析
     text = text.strip()
@@ -51,15 +51,27 @@ def _extract_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # 3. 第一个 {...} 块
-    m = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL)
-    if m:
-        try:
-            result = json.loads(m.group(0))
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            pass
+    # 3. 基于大括号配对的深度嵌套提取
+    #    小模型常在 JSON 前后输出思考过程，导致 JSON 被大量文本包裹。
+    #    找到第一个 {，然后按配对数找到匹配的 }，提取中间部分。
+    first_brace = text.find("{")
+    if first_brace != -1:
+        depth = 0
+        for i in range(first_brace, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[first_brace : i + 1]
+                    try:
+                        result = json.loads(candidate)
+                        if isinstance(result, dict):
+                            return result
+                    except json.JSONDecodeError:
+                        # 这对 {} 不是有效 JSON，继续往后找下一个 {
+                        pass
+                    break
 
     return None
 
@@ -215,7 +227,7 @@ def parse_diagnosis_response(
 def build_error_fallback(env_type: EnvironmentType, error_message: str) -> DiagnosisResult:
     """构建 LLM 调用失败的降级兜底结果
 
-    用于 agent.py 异常处理器：LLM 超时 / 连接失败等场景。
+    用于 agent.py 异常处理器：LLM 超时 / 连接失败等场景（服务不可用）。
     source=ERROR_FALLBACK，confidence=INSUFFICIENT。
     """
     return DiagnosisResult(
@@ -230,4 +242,25 @@ def build_error_fallback(env_type: EnvironmentType, error_message: str) -> Diagn
         ],
         fault_scope="推理服务不可用，无法完成根因分析",
         diagnosis_source=DiagnosisSource.ERROR_FALLBACK,
+    )
+
+
+def build_format_fallback(env_type: EnvironmentType, error_message: str) -> DiagnosisResult:
+    """构建 LLM 输出格式异常的降级兜底结果
+
+    用于 agent.py：LLM 能响应但输出格式异常（如 JSON 解析失败），非服务故障。
+    区别于 ERROR_FALLBACK：模型实际可用，只是没遵循格式要求。
+    source=FORMAT_FALLBACK，confidence=INSUFFICIENT。
+    """
+    return DiagnosisResult(
+        root_cause="",
+        confidence=Confidence.INSUFFICIENT,
+        missing_info=[error_message],
+        evidence=[],
+        env_type=env_type,
+        investigation_steps=[
+            "模型输出格式异常，建议更换更大参数的模型或检查 Prompt",
+        ],
+        fault_scope="LLM 输出格式异常，未能生成结构化诊断结论",
+        diagnosis_source=DiagnosisSource.FORMAT_FALLBACK,
     )

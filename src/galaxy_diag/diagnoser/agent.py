@@ -9,7 +9,11 @@ diagnose() 是 DIAGNOSING 步骤的唯一入口，供 engine.py _do_diagnosing �
 
 from __future__ import annotations
 
-from galaxy_diag.diagnoser.postprocess import build_error_fallback, parse_diagnosis_response
+from galaxy_diag.diagnoser.postprocess import (
+    build_error_fallback,
+    build_format_fallback,
+    parse_diagnosis_response,
+)
 from galaxy_diag.diagnoser.prompts import build_diagnosis_messages
 from galaxy_diag.diagnoser.rules import match_rules
 from galaxy_diag.model.client import ModelAdapter
@@ -73,6 +77,9 @@ def diagnose(
         raw_response_retry = model_adapter.chat(retry_messages)
         result = parse_diagnosis_response(raw_response_retry, env_type)
         return result
-    except (DiagnoseError, ModelCallError):
-        # 重试仍失败：降级兜底
-        return build_error_fallback(env_type, "LLM 推理输出格式异常，无法解析")
+    except ModelCallError:
+        # 重试时服务故障：明确提示，降级兜底
+        return build_error_fallback(env_type, "LLM 推理服务不可用，无法完成根因分析")
+    except DiagnoseError:
+        # 重试仍格式异常：模型可用但未遵循格式要求
+        return build_format_fallback(env_type, "LLM 推理输出格式异常，无法解析")

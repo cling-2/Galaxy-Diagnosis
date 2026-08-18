@@ -134,7 +134,8 @@ class DiagnosisSource(str, Enum):
     RULE_MATCH = "rule_match"          # 规则匹配命中
     LLM = "llm"                        # LLM 推理
     LLM_FALLBACK = "llm_fallback"      # LLM 输出校验失败，降级修复后使用
-    ERROR_FALLBACK = "error_fallback"  # LLM 调用失败，降级兜底
+    FORMAT_FALLBACK = "format_fallback"  # LLM 输出格式异常（如 JSON 解析失败），非服务故障
+    ERROR_FALLBACK = "error_fallback"  # LLM 调用失败（服务不可用），降级兜底
 
 
 class Confidence(str, Enum):
@@ -171,6 +172,7 @@ class FixSource(str, Enum):
 
     LLM = "llm"                        # LLM 生成
     LLM_FALLBACK = "llm_fallback"      # LLM 输出校验失败，降级修复后使用
+    FORMAT_FALLBACK = "format_fallback"  # LLM 输出格式异常（如 JSON 解析失败），非服务故障
     ERROR_FALLBACK = "error_fallback"  # LLM 调用失败，降级兜底
 
 

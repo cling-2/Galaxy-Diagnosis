@@ -13,6 +13,7 @@ from galaxy_diag.fixer.generator import generate_script
 from galaxy_diag.fixer.postprocess import (
     _JSON_RETRY_SUFFIX,
     build_error_fallback,
+    build_format_fallback,
     parse_fix_response,
 )
 from galaxy_diag.fixer.prompts import build_fix_messages
@@ -140,8 +141,10 @@ def generate(
             ]
             raw_response_retry = model_adapter.chat(retry_messages)
             suggestion = parse_fix_response(raw_response_retry)
-        except (FixerError, ModelCallError):
-            suggestion = build_error_fallback("LLM 输出格式异常，无法生成修复建议")
+        except ModelCallError:
+            suggestion = build_error_fallback("LLM 推理服务不可用，无法生成修复建议")
+        except FixerError:
+            suggestion = build_format_fallback("LLM 输出格式异常，无法生成修复建议")
 
     # 确保至少含一个验证步骤（LLM 漏生成时补兜底，仅在有步骤时生效）
     if suggestion.steps:

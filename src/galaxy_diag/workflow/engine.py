@@ -424,6 +424,11 @@ class WorkflowEngine:
             self._console.print(
                 "[error]⚠ LLM 推理服务不可用，已降级为信息不足结论[/error]"
             )
+        elif diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
+            self._console.print(
+                "[warning]⚠ LLM 输出格式异常（非服务故障），"
+                "模型未能生成结构化 JSON，已降级[/warning]"
+            )
         elif diagnosis.diagnosis_source == DiagnosisSource.LLM_FALLBACK:
             self._console.print(
                 "[warning]⚠ LLM 推理结果校验部分失败，已自动修复[/warning]"
@@ -432,7 +437,8 @@ class WorkflowEngine:
         display.print_diagnosis(diagnosis)
         self._save()
 
-        # ── LLM 不可用时直接终止，不回退补充采集（否则死循环）──
+        # ── LLM 服务不可用时直接终止，不回退补充采集（否则死循环）──
+        # ── FORMAT_FALLBACK（格式异常）不终止，降级后继续流程 ──
         if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
             self._console.print(
                 "\n[error]✗ LLM 推理服务不可用，无法完成根因分析。[/error]"
@@ -441,6 +447,17 @@ class WorkflowEngine:
                 "[dim]  请修复推理服务后使用 galaxy-diag run --resume 恢复[/dim]"
             )
             self._mark_done("LLM 推理服务不可用")
+            return
+
+        # FORMAT_FALLBACK：模型可用但输出格式异常，降级但继续流程
+        # （小模型常见问题：能推理但不会严格输出 JSON）
+        if diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
+            self._console.print(
+                "\n[warning]⚠ 模型输出格式异常，建议使用更大参数的模型"
+                "（如 qwen3:8b）以获得结构化诊断结论[/warning]"
+            )
+            # 不终止，降级为 INSUFFICIENT 后继续到 PLANNING
+            self._transition(WorkflowStep.PLANNING)
             return
 
         # 分支判断
@@ -526,6 +543,15 @@ class WorkflowEngine:
             for note in proposal.risk_notes:
                 self._console.print(f"  [error]- {note}[/error]")
             self._mark_done("修复建议生成失败，无法继续")
+            return
+        elif proposal.source == FixSource.FORMAT_FALLBACK:
+            self._console.print("[warning]⚠ 模型输出格式异常，未能生成结构化修复建议[/warning]")
+            for note in proposal.risk_notes:
+                self._console.print(f"  [warning]- {note}[/warning]")
+            self._console.print(
+                "[dim]  建议使用更大参数的模型（如 qwen3:8b）以获得结构化修复建议[/dim]"
+            )
+            self._mark_done("模型输出格式异常，无法生成修复建议")
             return
         elif proposal.source == FixSource.LLM_FALLBACK:
             self._console.print("[warning]⚠ 修复建议部分校验失败，已自动修复[/warning]")
