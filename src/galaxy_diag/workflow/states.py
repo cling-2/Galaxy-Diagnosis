@@ -94,7 +94,10 @@ HAPPY_PATH: list[WorkflowStep] = [
 # 对应 workflow-design.md §2.3 转换规则
 # key: 当前状态 → value: 允许的下一状态集合（不含终态，终态由特殊标记处理）
 TRANSITIONS: dict[WorkflowStep, list[WorkflowStep]] = {
-    WorkflowStep.ENV_RECOGNISING: [WorkflowStep.COLLECTING],
+    WorkflowStep.ENV_RECOGNISING: [
+        WorkflowStep.COLLECTING,        # 正常流程
+        WorkflowStep.PLANNING,          # B类：已知故障模式跳过 COLLECTING+DIAGNOSING
+    ],
     WorkflowStep.COLLECTING: [
         WorkflowStep.DIAGNOSING,            # 正常流程
         WorkflowStep.PLANNING,              # 已知故障模式短路（REQ-F-02 验收标准 4）
@@ -139,6 +142,8 @@ EXECUTING_NEXT_ON_FAILURE = "rollback"  # 标记为回滚
 SKIP_TARGETS: dict[WorkflowStep, list[WorkflowStep]] = {
     # 已知故障模式：COLLECTING 后可跳过 DIAGNOSING 直接 PLANNING
     WorkflowStep.COLLECTING: [WorkflowStep.PLANNING],
+    # B类跳过：ENV_RECOGNISING 后已知故障模式直接跳到 PLANNING
+    WorkflowStep.ENV_RECOGNISING: [WorkflowStep.PLANNING],
 }
 
 

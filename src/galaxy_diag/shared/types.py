@@ -433,6 +433,9 @@ class WorkflowState:
     fix: FixProposal | None = None
     snapshot: SnapshotMeta | None = None
     history: list[dict] = field(default_factory=list)  # 步骤历史（含时间戳、状态转换、结果）
+    should_skip_collecting: bool = False          # B类：已知故障模式跳过 COLLECTING
+    should_skip_hardware: bool = False            # C类：跳过完整硬件采集
+    hallucination_check_result: str | None = None  # 反幻觉校验结果
 
     @property
     def session_status(self) -> SessionStatus:

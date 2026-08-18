@@ -222,6 +222,9 @@ def _dict_to_state(raw: dict[str, Any]) -> WorkflowState:
         fix=_parse_fix_proposal(raw.get("fix")),
         snapshot=_parse_snapshot_meta(raw.get("snapshot")),
         history=raw.get("history", []),
+        should_skip_collecting=raw.get("should_skip_collecting", False),
+        should_skip_hardware=raw.get("should_skip_hardware", False),
+        hallucination_check_result=raw.get("hallucination_check_result"),
     )
     return state
 
