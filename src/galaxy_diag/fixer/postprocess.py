@@ -32,9 +32,26 @@ _JSON_RETRY_SUFFIX = (
 
 # 验证步骤的只读命令前缀
 _READ_ONLY_PREFIXES = (
-    "ls", "cat", "df", "stat", "systemctl status",
-    "kubectl get", "kubectl describe", "ping",
-    "ip ", "ss ", "mount |", "free", "top",
+    # 文件/系统查看
+    "ls", "cat", "df", "stat", "du", "free", "top", "uname",
+    "lscpu", "lsof", "find", "grep", "head", "tail", "wc",
+    "readlink", "realpath", "file", "md5sum", "sha256sum",
+    # systemd / journal
+    "systemctl status", "systemctl list", "systemctl is-active",
+    "journalctl",
+    # 网络
+    "ip ", "ss ", "ping", "nslookup", "dig", "curl", "wget",
+    "netstat", "nc ", "traceroute", "ifconfig",
+    # K8s 只读
+    "kubectl get", "kubectl describe", "kubectl logs",
+    "kubectl top", "kubectl version", "kubectl cluster-info",
+    "kubectl api-resources", "kubectl auth can-i",
+    # Docker 只读
+    "docker ps", "docker inspect", "docker logs", "docker stats",
+    "docker version", "docker info", "docker images",
+    "docker network ls", "docker volume ls",
+    # 挂载/进程查看
+    "mount |", "ps ", "pgrep", "pidof",
 )
 
 
@@ -164,12 +181,17 @@ def _validate_semantic(data: dict) -> tuple[dict, bool]:
             repaired = True
 
         # 5. 验证步骤应为只读操作
+        #    策略：保留 LLM 的 is_verification 判断（尊重标注），但若命令不在已知
+        #    只读前缀列表内，在 risk_note 追加人工确认提示——不静默降级为修复步骤，
+        #    避免验证操作被误判为修复步骤而漏检（白名单无法穷举所有只读命令）。
         if step.get("is_verification"):
             cmd = step.get("command", "").strip()
             is_read_only = any(cmd.startswith(p) for p in _READ_ONLY_PREFIXES)
             if not is_read_only:
-                step["is_verification"] = False  # 降级为非验证步骤
-                repaired = True
+                note = step.get("risk_note", "")
+                if "请人工确认" not in note:
+                    step["risk_note"] = (note + "（⚠ 命令不在已知只读列表内，执行前请人工确认确为只读操作）").lstrip()
+                    repaired = True
 
         # 6. 占位符格式：识别 <UPPER_CASE> 模式，补到 parameters
         placeholders = _PLACEHOLDER_PATTERN.findall(step.get("command", ""))

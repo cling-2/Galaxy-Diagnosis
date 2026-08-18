@@ -344,8 +344,10 @@ def print_fix_proposal(proposal: FixProposal) -> None:
     if source_label:
         console.print(f"[dim]来源: {source_label}[/dim]")
 
-    # 命令步骤表格
-    if proposal.commands:
+    # 命令步骤表格（仅显示修复步骤，验证步骤在步骤 7/7 结果验证时执行）
+    fix_commands = [cmd for cmd in proposal.commands if not cmd.is_verification]
+    verify_commands = [cmd for cmd in proposal.commands if cmd.is_verification]
+    if fix_commands:
         console.print("[heading]🔧 修复步骤[/heading]")
         # 风险列用 ratio=2 让 Rich 分配更多宽度，不再硬截断
         # （REQ-D-01 验收标准 7：风险提示需完整可见）
@@ -354,15 +356,21 @@ def print_fix_proposal(proposal: FixProposal) -> None:
         table.add_column("命令", min_width=25)
         table.add_column("说明", min_width=10)
         table.add_column("风险", min_width=16, ratio=2, overflow="fold")
-        table.add_column("类型", width=6)
 
-        for i, cmd in enumerate(proposal.commands, 1):
+        for i, cmd in enumerate(fix_commands, 1):
             risk_style = "danger" if cmd.risk_note else "dim"
             risk_text = f"[{risk_style}]{cmd.risk_note or '无'}[/{risk_style}]"
-            verify_text = "[info]验证[/info]" if cmd.is_verification else ""
-            table.add_row(str(i), cmd.command, cmd.description, risk_text, verify_text)
+            table.add_row(str(i), cmd.command, cmd.description, risk_text)
 
         console.print(table)
+
+    # 验证步骤提示
+    if verify_commands:
+        console.print(
+            f"\n[dim]📋 验证步骤（{len(verify_commands)} 条）将在步骤 7/7 结果验证时执行:[/dim]"
+        )
+        for cmd in verify_commands:
+            console.print(f"  [dim]- {cmd.command}  ({cmd.description})[/dim]")
 
     # 脚本
     if proposal.script:
