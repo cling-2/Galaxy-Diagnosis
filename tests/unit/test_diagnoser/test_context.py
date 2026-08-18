@@ -16,6 +16,7 @@ from galaxy_diag.diagnoser.context import (
     build_diagnostic_context,
     match_tools_by_keywords,
     preprocess_logs,
+    should_collect_hardware,
 )
 from galaxy_diag.shared.errors import CollectorError, CollectorToolNotFoundError
 from galaxy_diag.shared.types import (
@@ -254,3 +255,57 @@ class TestBuildContext:
                 "服务失败", env_info, user_log_files=["/tmp/test.log"],
             )
         assert len(ctx.user_provided) == 1
+
+
+# ===== should_collect_hardware =====
+
+
+class TestShouldCollectHardware:
+    """C类：按需精简硬件采集的关键词判断"""
+
+    def test_disk_problem_needs_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("磁盘 I/O error") is True
+
+    def test_raid_firmware_needs_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("RAID 卡固件版本不兼容") is True
+
+    def test_mount_problem_needs_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("挂载失败 mount error") is True
+
+    def test_network_problem_no_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("容器间网络不通") is False
+
+    def test_service_fail_no_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("服务启动失败") is False
+
+    def test_oom_no_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("OOM 内存不足") is False
+
+    def test_mixed_problem_needs_hardware(self):
+        """同时命中需要和不需要的关键词，需要优先"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("磁盘问题导致服务失败") is True
+
+    def test_empty_defaults_to_collect(self):
+        """空描述默认采集（保守）"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("") is True
+
+    def test_unrelated_defaults_to_collect(self):
+        """无关描述默认采集（保守）"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("something random xyz") is True
+
+    def test_controller_needs_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("VM 数据盘控制器驱动未加载") is True
+
+    def test_lsblk_needs_hardware(self):
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("lsblk 只显示系统盘") is True

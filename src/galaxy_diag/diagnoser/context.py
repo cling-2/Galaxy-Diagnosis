@@ -105,6 +105,53 @@ def extract_keywords(problem_description: str) -> list[str]:
     return tokens
 
 
+# ===== C类：按需精简硬件采集 =====
+
+# 需要硬件采集的关键词（命中任一即需要）
+_HARDWARE_NEEDED_KEYWORDS: tuple[str, ...] = (
+    "磁盘", "盘", "disk", "I/O", "io error", "smart", "raid",
+    "固件", "firmware", "存储", "storage", "mount", "挂载",
+    "利旧", "控制器", "数据盘", "lsblk", "fsck",
+)
+
+# 不需要硬件采集的关键词（仅当未命中 _HARDWARE_NEEDED_KEYWORDS 时生效）
+_HARDWARE_NOT_NEEDED_KEYWORDS: tuple[str, ...] = (
+    "网络", "network", "ping", "cni", "iptables",
+    "路由", "dns", "服务", "启动", "service", "容器",
+    "pod", "k8s", "oom", "内存不足", "内存溢出",
+)
+
+
+def should_collect_hardware(problem_description: str) -> bool:
+    """根据问题描述判断是否需要采集完整硬件信息（C类精简采集）
+
+    策略：
+    1. 命中"需要硬件"关键词 → True
+    2. 未命中"需要硬件"但命中"不需要硬件" → False
+    3. 均未命中 → True（保守：不确定就采）
+
+    Args:
+        problem_description: 用户问题描述
+
+    Returns:
+        True 需要采集硬件，False 可跳过
+    """
+    if not problem_description:
+        return True
+
+    lower = problem_description.lower()
+
+    # 优先级：需要硬件的关键词优先
+    if any(kw.lower() in lower for kw in _HARDWARE_NEEDED_KEYWORDS):
+        return True
+
+    if any(kw.lower() in lower for kw in _HARDWARE_NOT_NEEDED_KEYWORDS):
+        return False
+
+    # 默认采集（保守）
+    return True
+
+
 # ===== 预处理与体积控制 =====
 
 
