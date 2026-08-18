@@ -153,6 +153,7 @@ class WorkflowEngine:
         self._user_log_files = user_log_files or []
         self._console = display.get_console()
         self._last_user_step_num = 0  # 上一次打印的用户可见步骤编号（避免重复打印步骤标题）
+        self._fix_retry_feedback: list[str] | None = None  # D-03 CRITICAL 失败反馈（回退 PLANNING 时回灌）
 
         # 初始化 ModelAdapter（延迟导入避免循环依赖）
         if mock:
@@ -533,7 +534,10 @@ class WorkflowEngine:
                 diagnosis=self.state.diagnosis,
                 env_info=self.state.env_info,
                 model_adapter=self._model_adapter,
+                prior_failures=self._fix_retry_feedback,  # 回退重生成时回灌 CRITICAL 失败原因
             )
+        # 消费即清空：无论本次生成是否通过，反馈不跨次保留
+        self._fix_retry_feedback = None
 
         self.state.fix = proposal
 
@@ -582,7 +586,7 @@ class WorkflowEngine:
         """SECURITY_CHECKING: D-03 生成后检测（代码质量保障）
 
         在"修复建议"步骤末尾执行，显示安全性提示。
-        策略：CRITICAL（语法/兼容性错误）→ 回退 PLANNING 重新生成
+        策略：CRITICAL（语法/兼容性错误）→ 回退 PLANNING 重新生成（附失败反馈）
               WARNING（危险模式提醒）→ 允许继续
         注意：此步骤不打印独立的步骤标题，归属于用户可见步骤 4/7"修复建议"
         """
@@ -594,27 +598,15 @@ class WorkflowEngine:
         proposal = self.state.fix
         env_type = self.state.env_info.env_type
 
-        # 防止 D-03 反复失败导致 PLANNING 死循环
-        security_retry_count = sum(
-            1 for h in self.state.history
-            if h.get("step") == WorkflowStep.SECURITY_CHECKING.value
-            and h.get("result") == "failed"
-        )
-        if security_retry_count >= MAX_SECURITY_RETRIES:
-            self._console.print(
-                f"[warning]安全检测已回退 {security_retry_count} 次，跳过检测继续[/warning]"
-            )
-            proposal.check_passed = True
-            proposal.check_issues = []
-            self._transition(WorkflowStep.EXECUTION_GUARD)
-            return
-
+        # 运行 D-03 检测（先检测再判断，以便在耗尽时展示本次 CRITICAL 原因）
         self._console.print("[info]执行生成后检测 (D-03)...[/info]")
         result = check(
             commands=proposal.commands,
             script=proposal.script,
             script_language=proposal.script_language,
             env_type=env_type,
+            has_docker_cli=self.state.env_info.has_docker_cli,
+            has_kubectl_cli=self.state.env_info.has_kubectl_cli,
         )
 
         proposal.check_passed = result.passed
@@ -622,20 +614,43 @@ class WorkflowEngine:
         proposal.check_detail = result
         self._save()
 
-        if not result.passed:
-            # CRITICAL: 显示安全性提示，回退到 PLANNING 重新生成
+        if result.has_critical:
+            # CRITICAL: 显示安全性提示，记录失败，判断是否耗尽
             self._console.print("\n[danger]✗ 生成后检测未通过[/danger]")
             for issue in result.issues:
                 if issue.severity == CheckSeverity.CRITICAL:
                     self._console.print(f"  [danger]- [{issue.category}] {issue.message}[/danger]")
                     if issue.suggestion:
                         self._console.print(f"    💡 {issue.suggestion}")
+
+            # 记录本次失败
             self.state.history.append({
                 "step": WorkflowStep.SECURITY_CHECKING.value,
                 "timestamp": datetime.now().isoformat(),
                 "result": "failed",
             })
             self._save()
+
+            # 检查是否达到重试上限
+            security_retry_count = sum(
+                1 for h in self.state.history
+                if h.get("step") == WorkflowStep.SECURITY_CHECKING.value
+                and h.get("result") == "failed"
+            )
+            if security_retry_count > MAX_SECURITY_RETRIES:
+                # 耗尽：安全终止，绝不执行被判 CRITICAL 的修复
+                self._console.print(
+                    f"\n[danger]✗ 修复建议已 {security_retry_count} 次未通过生成后检测，"
+                    f"无法自动生成与环境兼容的修复，停止以避免执行不兼容操作[/danger]"
+                )
+                self._mark_done("修复建议多次未通过生成后检测（已达重试上限），请人工介入或调整诊断输入")
+                return
+
+            # 未耗尽：存入失败反馈，回退 PLANNING 重新生成
+            self._fix_retry_feedback = [
+                f"{i.message}" + (f"（建议: {i.suggestion}）" if i.suggestion else "")
+                for i in result.issues if i.severity == CheckSeverity.CRITICAL
+            ]
             self._console.print("[dim]回退到修复建议生成步骤[/dim]")
             self._transition(WorkflowStep.PLANNING)
             return
@@ -841,8 +856,19 @@ class WorkflowEngine:
 
         proposal = self.state.fix
 
-        # 过滤出修复命令（不含验证步骤），验证命令留给 VERIFYING
-        fix_commands = [cmd for cmd in proposal.commands if not cmd.is_verification]
+        # 过滤出本机可执行的修复命令（不含验证步骤、不含 requires_host 命令）
+        # 验证命令留给 VERIFYING；requires_host 命令不在本机执行
+        fix_commands = [cmd for cmd in proposal.commands
+                        if not cmd.is_verification and not cmd.requires_host]
+        host_commands = [cmd for cmd in proposal.commands
+                         if not cmd.is_verification and cmd.requires_host]
+
+        if host_commands:
+            self._console.print("\n[warning]⚠ 以下修复命令需在宿主机执行（容器内无法执行）:[/warning]")
+            for hc in host_commands:
+                self._console.print(f"  [dim]- {hc.command}  ({hc.description})[/dim]")
+            self._console.print("")
+
         fix_only_proposal = FixProposal(
             commands=fix_commands,
             script=proposal.script,
@@ -912,13 +938,23 @@ class WorkflowEngine:
         if verify_result.success:
             if verify_result.total_steps == 0:
                 # 无验证命令：保守通过但提示人工确认
-                self._console.print(
-                    "[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]"
-                )
+                if verify_result.host_required_commands:
+                    self._console.print(
+                        "[warning]⚠ 所有验证命令需在宿主机执行，无法在本机自动验证[/warning]"
+                    )
+                else:
+                    self._console.print(
+                        "[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]"
+                    )
             else:
                 self._console.print(
                     f"[success]✓ 修复验证通过: {verify_result.passed_steps}/{verify_result.total_steps} 步骤成功[/success]"
                 )
+            # 展示需宿主机执行的验证/修复命令
+            if verify_result.host_required_commands:
+                self._console.print("\n[warning]⚠ 以下命令需在宿主机执行以完成验证:[/warning]")
+                for hc in verify_result.host_required_commands:
+                    self._console.print(f"  [dim]- {hc}[/dim]")
             self._write_audit(result="success")
             self._mark_done("修复验证通过")
         else:

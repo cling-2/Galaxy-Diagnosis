@@ -88,6 +88,8 @@ class EnvInfo:
 
     env_type: EnvironmentType = EnvironmentType.BARE_METAL
     container_runtime: ContainerRuntime | None = None  # 容器运行时子类型（仅 CONTAINER 时有值）
+    has_docker_cli: bool = False    # docker CLI 是否可用（容器内不一定有）
+    has_kubectl_cli: bool = False   # kubectl CLI 是否可用（容器内不一定有）
     hardware: HardwareInfo = field(default_factory=HardwareInfo)
     storage: list[StorageInfo] = field(default_factory=list)
     collection_warnings: list[str] = field(default_factory=list)  # 采集受限/降级提示
@@ -190,6 +192,7 @@ class FixStep:
     risk_note: str = ""            # 安全风险提示
     parameters: dict[str, str] = field(default_factory=dict)  # 占位符名 → 推荐默认值
     is_verification: bool = False  # 是否为验证步骤（验证步骤风险低，不影响系统状态）
+    requires_host: bool = False    # 是否必须在宿主机执行（容器内无法执行的 docker/kubectl 管理操作）
 
 
 @dataclass
@@ -256,6 +259,7 @@ class CommandTemplate:
     risk_note: str = ""  # 安全风险提示
     editable_params: dict[str, str] = field(default_factory=dict)  # 占位符名 → 默认值
     is_verification: bool = False  # 是否为验证步骤（只读操作，不影响系统状态）
+    requires_host: bool = False    # 是否必须在宿主机执行（容器内无法执行的 docker/kubectl 管理操作）
 
 
 @dataclass
@@ -352,6 +356,7 @@ class ExecuteResult:
     success: bool = False
     output: str = ""
     failed_step: int = -1  # 失败的步骤序号（1-based），-1 表示未失败
+    host_required_commands: list[str] = field(default_factory=list)  # 需在宿主机执行的修复命令（跳过本机执行）
 
 
 @dataclass
@@ -366,8 +371,9 @@ class VerifyResult:
     output: str = ""              # 各验证命令的输出汇总
     failed_step: int = -1         # 失败的验证步骤序号（1-based），-1 表示全部通过
     failed_description: str = ""  # 失败步骤的 description
-    total_steps: int = 0          # 总验证步骤数
+    total_steps: int = 0          # 总验证步骤数（不含 requires_host 命令）
     passed_steps: int = 0         # 通过的步骤数
+    host_required_commands: list[str] = field(default_factory=list)  # 需在宿主机执行的验证命令（跳过本机执行）
 
 
 # ===== 工作流 =====

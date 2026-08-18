@@ -24,7 +24,6 @@ from galaxy_diag.shared.types import (
     DiagnosisResult,
     EnvInfo,
     EnvironmentType,
-    ContainerRuntime,
     FixProposal,
     FixSource,
     FixStep,
@@ -53,7 +52,8 @@ def _ensure_verification_step(
 
     fallback: FixStep
     if env_type == EnvironmentType.CONTAINER:
-        if env_info.container_runtime == ContainerRuntime.KUBERNETES:
+        # 容器内：优先用容器内可执行命令，不用 docker/kubectl
+        if env_info.has_kubectl_cli:
             fallback = FixStep(
                 command="kubectl get pods -n kube-system",
                 description="验证 Kubernetes Pod 状态",
@@ -61,10 +61,19 @@ def _ensure_verification_step(
                 parameters={},
                 is_verification=True,
             )
-        else:
+        elif env_info.has_docker_cli:
             fallback = FixStep(
                 command="docker ps",
                 description="验证容器运行状态",
+                risk_note="只读操作，无风险",
+                parameters={},
+                is_verification=True,
+            )
+        else:
+            # 容器内且无 docker/kubectl CLI：用进程/服务状态验证
+            fallback = FixStep(
+                command="ps aux | grep galaxy",
+                description="验证银河平台进程是否运行",
                 risk_note="只读操作，无风险",
                 parameters={},
                 is_verification=True,
@@ -104,6 +113,7 @@ def generate(
     diagnosis: DiagnosisResult,
     env_info: EnvInfo,
     model_adapter: ModelAdapter,
+    prior_failures: list[str] | None = None,
 ) -> FixProposal:
     """PLANNING 顶层入口：LLM 生成 → 后处理 → 模板渲染 → 脚本组装
 
@@ -111,12 +121,13 @@ def generate(
         diagnosis: 诊断结论（来自 DIAGNOSING）
         env_info: 环境感知产出（来自 ENV_RECOGNISING）
         model_adapter: LLM 调用入口
+        prior_failures: 上次 D-03 CRITICAL 失败原因列表（回退重生成时传入，引导 LLM 避免同类错误）
 
     Returns:
         FixProposal: 修复建议（尚未经过多维检测，检测在 SECURITY_CHECKING 步骤执行）
     """
-    # 1. 组装 LLM 消息
-    messages = build_fix_messages(diagnosis, env_info)
+    # 1. 组装 LLM 消息（含失败反馈）
+    messages = build_fix_messages(diagnosis, env_info, prior_failures=prior_failures)
 
     # 2. LLM 生成修复建议（含重试逻辑）
     suggestion: FixSuggestion | None = None

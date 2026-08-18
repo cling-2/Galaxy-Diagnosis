@@ -234,6 +234,7 @@ def _build_suggestion(data: dict, source: FixSource) -> FixSuggestion:
             risk_note=step_data.get("risk_note", "请评估此操作的风险"),
             parameters=step_data.get("parameters", {}),
             is_verification=step_data.get("is_verification", False),
+            requires_host=step_data.get("requires_host", False),
         ))
 
     return FixSuggestion(

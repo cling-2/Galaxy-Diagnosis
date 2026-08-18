@@ -150,13 +150,17 @@ def _check_env_compatibility(
     commands: list[CommandTemplate],
     script: str | None,
     env_type: EnvironmentType,
+    *,
+    has_docker_cli: bool = True,
+    has_kubectl_cli: bool = True,
 ) -> list[CheckIssue]:
     """环境兼容性检测
 
     检测与环境不兼容的操作：
-    - 容器环境使用 systemctl / kubectl / crictl / modprobe → CRITICAL
-    - VM/裸金属使用 kubectl / crictl → WARNING
-    - VM 环境加载内核模块 → WARNING
+    - 容器环境：systemctl 可用（容器内服务由 systemd 管理，不报错）；
+      kubectl/docker/crictl 在 CLI 不可用时 → WARNING（建议标记 requires_host）；
+      modprobe/blkid/hwinfo 等需宿主机内核/块设备的操作 → WARNING（建议标记 requires_host）
+    - VM 环境加载内核模块（modprobe）→ WARNING（确认虚拟化层兼容性）
     """
     issues: list[CheckIssue] = []
     all_commands = [cmd.command for cmd in commands]
@@ -165,42 +169,49 @@ def _check_env_compatibility(
 
     combined = "\n".join(all_commands)
 
-    # 容器环境不兼容命令
+    # 容器环境：仅对真正无法在容器内执行的命令提示（不阻断）
     if env_type == EnvironmentType.CONTAINER:
-        container_incompatible = [
-            (r"\bsystemctl\b", "容器环境通常不运行 systemd，应使用 docker/service 命令"),
-            (r"\bkubectl\b", "容器环境通常不含 kubectl，应使用 docker �4命令"),
-            (r"\bcrictl\b", "容器环境通常不含 crictl，应使用 docker 命令"),
-            (r"\bmodprobe\b", "容器内无法加载内核模块，需在宿主机操作"),
-            (r"\bblkid\b", "容器内无法直接访问块设备，需在宿主机操作"),
-            (r"\bhwinfo\b", "容器内无法获取完整硬件信息"),
-        ]
-        for pattern, message in container_incompatible:
-            if re.search(pattern, combined):
+        # kubectl/crictl 在容器内 CLI 不可用时建议标记 requires_host（WARNING，不阻断）
+        if not has_kubectl_cli:
+            cli_advisory = [
+                (r"\bkubectl\b", "kubectl 在容器内不可用（未挂载 kubeconfig）"),
+                (r"\bcrictl\b", "crictl 在容器内不可用"),
+            ]
+            for pattern, message in cli_advisory:
+                if re.search(pattern, combined):
+                    issues.append(CheckIssue(
+                        category="compatibility",
+                        severity=CheckSeverity.WARNING,
+                        message=f"容器环境提示: {message}，请将此类命令标记 requires_host 或使用替代命令",
+                        command_index=-1,
+                        suggestion="将命令设为 requires_host=true 由宿主机执行，或改用 systemctl/ps 等容器内命令",
+                    ))
+        if not has_docker_cli:
+            if re.search(r"\bdocker\b", combined):
                 issues.append(CheckIssue(
                     category="compatibility",
-                    severity=CheckSeverity.CRITICAL,
-                    message=f"容器环境不兼容: {message}",
+                    severity=CheckSeverity.WARNING,
+                    message="容器环境提示: docker CLI 在容器内不可用（未挂载 docker.sock），请将此类命令标记 requires_host 或使用替代命令",
                     command_index=-1,
-                    suggestion="请在宿主机执行此操作，或使用容器适用的替代命令",
+                    suggestion="将命令设为 requires_host=true 由宿主机执行，或改用 systemctl/journalctl 等容器内命令",
                 ))
-
-    # VM/裸金属环境不兼容命令
-    if env_type in (EnvironmentType.VM, EnvironmentType.BARE_METAL):
-        host_incompatible = [
-            (r"\bkubectl\b", "非容器环境通常不安装 kubectl，应使用 systemctl"),
-            (r"\bcrictl\b", "非容器环境通常不安装 crictl"),
+        # 需宿主机内核/块设备的操作：容器内确实无法执行，WARNING 建议标记 requires_host
+        host_kernel_ops = [
+            (r"\bmodprobe\b", "容器内无法加载内核模块，需在宿主机操作"),
+            (r"\bblkid\b", "容器内无法直接访问块设备，需在宿主机操作"),
+            (r"\bhwinfo\b", "容器内无法获取完整硬件信息，需在宿主机操作"),
         ]
-        for pattern, message in host_incompatible:
+        for pattern, message in host_kernel_ops:
             if re.search(pattern, combined):
                 issues.append(CheckIssue(
                     category="compatibility",
                     severity=CheckSeverity.WARNING,
-                    message=f"非容器环境可能不兼容: {message}",
+                    message=f"容器环境提示: {message}",
                     command_index=-1,
-                    suggestion="请确认目标环境是否为 Kubernetes 集群",
+                    suggestion="将命令设为 requires_host=true 由宿主机执行",
                 ))
 
+    # VM 环境特定警告
     # VM 环境特定警告
     if env_type == EnvironmentType.VM:
         if re.search(r"\bmodprobe\b", combined):
@@ -267,12 +278,15 @@ def check(
     script: str | None,
     script_language: Literal["bash", "python"] | None,
     env_type: EnvironmentType,
+    *,
+    has_docker_cli: bool = True,
+    has_kubectl_cli: bool = True,
 ) -> CheckResult:
     """D-03 生成后检测：代码质量保障
 
     检测维度：
     1. 语法检查（CRITICAL：阻止进入 REVIEWING）
-    2. 环境兼容性检测（CRITICAL：阻止进入 REVIEWING）
+    2. 环境兼容性检测（CRITICAL/WARNING：取决于环境 CLI 可用性）
     3. 危险模式建议性警告（WARNING：允许继续，但告知用户）
 
     注意：危险操作检测在此为建议性警告，非强制拦截。
@@ -286,7 +300,11 @@ def check(
         issues.extend(_check_bash_syntax(script))
 
     # ② 环境兼容性检测
-    issues.extend(_check_env_compatibility(commands, script, env_type))
+    issues.extend(_check_env_compatibility(
+        commands, script, env_type,
+        has_docker_cli=has_docker_cli,
+        has_kubectl_cli=has_kubectl_cli,
+    ))
 
     # ③ 危险模式建议性警告
     issues.extend(_check_danger_advisory(commands, script))

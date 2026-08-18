@@ -231,96 +231,106 @@ class MockModelAdapter:
                 "impact_scope": "重启 CNI DaemonSet，期间容器网络中断约 30-60 秒",
             }
         elif is_container and not is_k8s:
-            # Docker 容器环境
+            # Docker 容器环境（本工具在容器内运行）
+            # 容器内通常无 docker CLI，优先用容器内可执行命令；
+            # 需 docker 管理的操作（重启其他容器）标记 requires_host
             if "网络" in full_text or "network" in full_text.lower():
                 # 容器网络故障
                 response = {
                     "steps": [
                         {
-                            "command": "docker logs <CONTAINER_NAME> --tail 100",
-                            "description": "查看网络容器日志",
+                            "command": "journalctl -u galaxy-network --no-pager -n 100",
+                            "description": "查看网络服务日志",
                             "risk_note": "只读操作，无风险",
-                            "parameters": {"CONTAINER_NAME": "galaxy-network"},
+                            "parameters": {},
                             "is_verification": True,
                         },
                         {
-                            "command": "docker restart <CONTAINER_NAME>",
-                            "description": "重启网络容器",
-                            "risk_note": "重启期间网络服务不可用",
-                            "parameters": {"CONTAINER_NAME": "galaxy-network"},
+                            "command": "systemctl restart <SERVICE_NAME>",
+                            "description": "重启网络服务",
+                            "risk_note": "重启服务期间网络短暂中断",
+                            "parameters": {"SERVICE_NAME": "galaxy-network"},
                             "is_verification": False,
                         },
                         {
-                            "command": "docker ps --filter name=<CONTAINER_NAME>",
-                            "description": "验证容器已恢复运行",
+                            "command": "systemctl status <SERVICE_NAME>",
+                            "description": "验证网络服务已恢复",
                             "risk_note": "只读操作，无风险",
-                            "parameters": {"CONTAINER_NAME": "galaxy-network"},
+                            "parameters": {"SERVICE_NAME": "galaxy-network"},
                             "is_verification": True,
                         },
                     ],
                     "script_language": "bash",
-                    "risk_notes": ["重启容器期间网络服务不可用"],
-                    "impact_scope": "重启 galaxy-network 容器，期间网络服务中断约 5-10 秒",
+                    "risk_notes": ["重启服务期间网络短暂中断"],
+                    "impact_scope": "重启 galaxy-network 服务，期间网络中断约 5-10 秒",
                 }
             elif "磁盘" in full_text or "存储" in full_text or "disk" in full_text.lower():
                 # 容器存储/磁盘故障
                 response = {
                     "steps": [
                         {
-                            "command": "docker inspect <CONTAINER_NAME> --format='{{json .Mounts}}'",
-                            "description": "检查容器挂载配置",
+                            "command": "lsblk",
+                            "description": "检查数据磁盘可见性",
                             "risk_note": "只读操作，无风险",
-                            "parameters": {"CONTAINER_NAME": "galaxy-storage"},
+                            "parameters": {},
                             "is_verification": True,
                         },
                         {
-                            "command": "docker restart <CONTAINER_NAME>",
-                            "description": "重启存储容器以重新挂载",
-                            "risk_note": "重启期间存储服务不可用",
-                            "parameters": {"CONTAINER_NAME": "galaxy-storage"},
+                            "command": "systemctl restart <SERVICE_NAME>",
+                            "description": "重启存储服务",
+                            "risk_note": "重启服务期间存储不可用",
+                            "parameters": {"SERVICE_NAME": "galaxy-storage"},
                             "is_verification": False,
                         },
                         {
-                            "command": "docker ps --filter name=<CONTAINER_NAME>",
-                            "description": "验证容器已恢复运行",
-                            "risk_note": "只读操作，无风险",
+                            "command": "docker restart <CONTAINER_NAME>",
+                            "description": "在宿主机重启存储容器（容器内无法执行）",
+                            "risk_note": "重启容器期间存储服务不可用；此命令需在宿主机执行",
                             "parameters": {"CONTAINER_NAME": "galaxy-storage"},
+                            "is_verification": False,
+                            "requires_host": True,
+                        },
+                        {
+                            "command": "systemctl status <SERVICE_NAME>",
+                            "description": "验证存储服务已恢复",
+                            "risk_note": "只读操作，无风险",
+                            "parameters": {"SERVICE_NAME": "galaxy-storage"},
                             "is_verification": True,
                         },
                     ],
                     "script_language": "bash",
-                    "risk_notes": ["重启容器期间存储服务不可用"],
-                    "impact_scope": "重启 galaxy-storage 容器，期间存储服务中断约 5-10 秒",
+                    "risk_notes": ["重启服务期间存储不可用；docker restart 需在宿主机执行"],
+                    "impact_scope": "重启 galaxy-storage 服务/容器，期间存储服务中断约 5-10 秒",
                 }
             else:
                 # 容器通用故障
                 response = {
                     "steps": [
                         {
-                            "command": "docker logs <CONTAINER_NAME> --tail 100",
-                            "description": "查看异常容器日志",
+                            "command": "journalctl -u <SERVICE_NAME> --no-pager -n 100",
+                            "description": "查看异常服务日志",
                             "risk_note": "只读操作，无风险",
-                            "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                            "parameters": {"SERVICE_NAME": "galaxy-api"},
                             "is_verification": True,
                         },
                         {
-                            "command": "docker restart <CONTAINER_NAME>",
-                            "description": "重启异常容器",
-                            "risk_note": "重启期间该容器提供的服务不可用",
-                            "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                            "command": "systemctl restart <SERVICE_NAME>",
+                            "description": "重启异常服务",
+                            "risk_note": "重启服务期间相关功能不可用",
+                            "parameters": {"SERVICE_NAME": "galaxy-api"},
                             "is_verification": False,
                         },
                         {
-                            "command": "docker ps --filter name=<CONTAINER_NAME>",
-                            "description": "验证容器已恢复运行",
+                            "command": "systemctl status <SERVICE_NAME>",
+                            "description": "验证服务已恢复运行",
                             "risk_note": "只读操作，无风险",
-                            "parameters": {"CONTAINER_NAME": "galaxy-api"},
+                            "parameters": {"SERVICE_NAME": "galaxy-api"},
                             "is_verification": True,
                         },
                     ],
                     "script_language": "bash",
-                    "risk_notes": ["重启容器期间相关服务不可用"],
-                    "impact_scope": "重启 galaxy-api 容器，期间 API 服务中断约 5-10 秒",
+                    "risk_notes": ["重启服务期间相关服务不可用"],
+                    "impact_scope": "重启 galaxy-api 服务，期间相关功能短暂不可用",
                 }
         elif "磁盘" in full_text or "存储" in full_text or "pvscsi" in full_text.lower():
             # VM/存储环境：驱动加载修复

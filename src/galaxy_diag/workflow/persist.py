@@ -288,6 +288,8 @@ def _parse_env_info(raw: dict | None) -> Any:
     return EnvInfo(
         env_type=env_type,
         container_runtime=container_runtime,
+        has_docker_cli=raw.get("has_docker_cli", False),
+        has_kubectl_cli=raw.get("has_kubectl_cli", False),
         hardware=hardware,
         storage=storage_list,
         collection_warnings=raw.get("collection_warnings", []),
@@ -402,6 +404,8 @@ def _parse_fix_proposal(raw: dict | None) -> Any:
             description=cmd_raw.get("description", ""),
             risk_note=cmd_raw.get("risk_note", ""),
             editable_params=cmd_raw.get("editable_params", {}),
+            is_verification=cmd_raw.get("is_verification", False),
+            requires_host=cmd_raw.get("requires_host", False),
         ))
 
     return FixProposal(

@@ -142,8 +142,11 @@ def _make_suggestion(*, with_verify: bool = True) -> FixSuggestion:
 
 
 def _make_env_info(env_type: EnvironmentType = EnvironmentType.BARE_METAL,
-                   container_runtime: ContainerRuntime | None = None) -> EnvInfo:
-    return EnvInfo(env_type=env_type, container_runtime=container_runtime)
+                   container_runtime: ContainerRuntime | None = None,
+                   has_docker_cli: bool = False,
+                   has_kubectl_cli: bool = False) -> EnvInfo:
+    return EnvInfo(env_type=env_type, container_runtime=container_runtime,
+                   has_docker_cli=has_docker_cli, has_kubectl_cli=has_kubectl_cli)
 
 
 def _make_diagnosis(fault_scope: str = "") -> DiagnosisResult:
@@ -210,7 +213,7 @@ class TestEnsureVerificationStep:
         from galaxy_diag.fixer.agent import _ensure_verification_step
 
         suggestion = _make_suggestion(with_verify=False)
-        env_info = _make_env_info(EnvironmentType.CONTAINER, ContainerRuntime.KUBERNETES)
+        env_info = _make_env_info(EnvironmentType.CONTAINER, ContainerRuntime.KUBERNETES, has_kubectl_cli=True)
         diagnosis = _make_diagnosis()
 
         result = _ensure_verification_step(suggestion, env_info, diagnosis)
@@ -222,10 +225,24 @@ class TestEnsureVerificationStep:
         from galaxy_diag.fixer.agent import _ensure_verification_step
 
         suggestion = _make_suggestion(with_verify=False)
-        env_info = _make_env_info(EnvironmentType.CONTAINER, ContainerRuntime.DOCKER)
+        env_info = _make_env_info(EnvironmentType.CONTAINER, ContainerRuntime.DOCKER, has_docker_cli=True)
         diagnosis = _make_diagnosis()
 
         result = _ensure_verification_step(suggestion, env_info, diagnosis)
         last = result.steps[-1]
         assert last.is_verification is True
         assert "docker ps" in last.command
+
+    def test_no_verify_adds_fallback_container_no_cli(self):
+        """容器内无 docker/kubectl CLI → 用 ps 兜底验证"""
+        from galaxy_diag.fixer.agent import _ensure_verification_step
+
+        suggestion = _make_suggestion(with_verify=False)
+        env_info = _make_env_info(EnvironmentType.CONTAINER, ContainerRuntime.DOCKER,
+                                  has_docker_cli=False, has_kubectl_cli=False)
+        diagnosis = _make_diagnosis()
+
+        result = _ensure_verification_step(suggestion, env_info, diagnosis)
+        last = result.steps[-1]
+        assert last.is_verification is True
+        assert "ps aux" in last.command

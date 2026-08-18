@@ -10,6 +10,8 @@ TODO: tools.py（LangChain @tool 封装）与 collect_network 待 diagnoser/ 模
 
 from __future__ import annotations
 
+import shutil
+
 from galaxy_diag.collector.env_detect import EnvironmentDetector, detect_container_runtime
 from galaxy_diag.collector.hardware import HardwareCollector
 from galaxy_diag.collector.storage import StorageCollector
@@ -57,9 +59,15 @@ def collect_env() -> EnvInfo:
     raw.update(st_collector.raw_output)
     raw = _truncate_raw_output(raw)
 
+    # 7. 容器内 CLI 可用性检测（容器内通常无 docker/kubectl CLI）
+    has_docker_cli = shutil.which("docker") is not None
+    has_kubectl_cli = shutil.which("kubectl") is not None
+
     return EnvInfo(
         env_type=env_type,
         container_runtime=container_runtime,
+        has_docker_cli=has_docker_cli,
+        has_kubectl_cli=has_kubectl_cli,
         hardware=hardware,
         storage=storage,
         collection_warnings=warnings,

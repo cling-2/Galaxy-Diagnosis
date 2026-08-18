@@ -356,11 +356,13 @@ def print_fix_proposal(proposal: FixProposal) -> None:
         table.add_column("命令", min_width=25)
         table.add_column("说明", min_width=10)
         table.add_column("风险", min_width=16, ratio=2, overflow="fold")
+        table.add_column("执行位置", width=8)
 
         for i, cmd in enumerate(fix_commands, 1):
             risk_style = "danger" if cmd.risk_note else "dim"
             risk_text = f"[{risk_style}]{cmd.risk_note or '无'}[/{risk_style}]"
-            table.add_row(str(i), cmd.command, cmd.description, risk_text)
+            loc = "[warning]宿主机[/warning]" if cmd.requires_host else "本机"
+            table.add_row(str(i), cmd.command, cmd.description, risk_text, loc)
 
         console.print(table)
 

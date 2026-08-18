@@ -63,6 +63,7 @@ def render_command_template(step: FixStep) -> CommandTemplate:
         risk_note=step.risk_note,
         editable_params=editable_params,
         is_verification=step.is_verification,
+        requires_host=step.requires_host,
     )
 
 
@@ -97,6 +98,7 @@ def apply_param_values(
         risk_note=template.risk_note,
         editable_params=new_params,
         is_verification=template.is_verification,
+        requires_host=template.requires_host,
     )
 
 

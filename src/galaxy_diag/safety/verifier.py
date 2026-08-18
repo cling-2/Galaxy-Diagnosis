@@ -45,11 +45,22 @@ def verify(proposal: "FixProposal", *, dry_run: bool = False) -> VerifyResult:
 
     不经 LLM，纯 subprocess 退出码判定。
     """
-    # 筛选验证命令
-    verify_cmds = [cmd for cmd in proposal.commands if cmd.is_verification]
+    # 筛选验证命令（分离 requires_host 命令，不在本机执行）
+    verify_cmds = [cmd for cmd in proposal.commands if cmd.is_verification and not cmd.requires_host]
+    host_cmds = [cmd for cmd in proposal.commands if cmd.is_verification and cmd.requires_host]
+
+    # 所有验证命令都需在宿主机执行：无法本机验证，提示人工确认
+    if not verify_cmds and host_cmds:
+        return VerifyResult(
+            success=True,
+            output="所有验证命令需在宿主机执行，无法在本机自动验证",
+            total_steps=0,
+            passed_steps=0,
+            host_required_commands=[c.command for c in host_cmds],
+        )
 
     # 无验证命令：保守通过，由 engine 层额外提示
-    if not verify_cmds:
+    if not verify_cmds and not host_cmds:
         return VerifyResult(
             success=True,
             output="无验证命令，修复步骤已全部执行完毕",
@@ -59,6 +70,12 @@ def verify(proposal: "FixProposal", *, dry_run: bool = False) -> VerifyResult:
 
     output_lines: list[str] = []
     passed_count = 0
+
+    # 提示需宿主机执行的验证命令
+    if host_cmds:
+        output_lines.append("[需宿主机执行] 以下验证命令不在本机执行:")
+        for hc in host_cmds:
+            output_lines.append(f"  - {hc.command}  ({hc.description})")
 
     for idx, cmd in enumerate(verify_cmds, 1):
         output_lines.append(f"[验证 {idx}/{len(verify_cmds)}] 执行: {cmd.command}")
@@ -94,6 +111,7 @@ def verify(proposal: "FixProposal", *, dry_run: bool = False) -> VerifyResult:
                     failed_description=cmd.description,
                     total_steps=len(verify_cmds),
                     passed_steps=passed_count,
+                    host_required_commands=[c.command for c in host_cmds],
                 )
 
             output_lines.append("  ✓ 验证通过")
@@ -108,6 +126,7 @@ def verify(proposal: "FixProposal", *, dry_run: bool = False) -> VerifyResult:
                 failed_description=cmd.description,
                 total_steps=len(verify_cmds),
                 passed_steps=passed_count,
+                host_required_commands=[c.command for c in host_cmds],
             )
         except Exception as e:
             output_lines.append(f"  ✗ 验证异常: {e}，停止后续验证")
@@ -126,4 +145,5 @@ def verify(proposal: "FixProposal", *, dry_run: bool = False) -> VerifyResult:
         output="\n".join(output_lines),
         total_steps=len(verify_cmds),
         passed_steps=passed_count,
+        host_required_commands=[c.command for c in host_cmds],
     )
