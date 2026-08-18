@@ -15,7 +15,13 @@ import shutil
 from galaxy_diag.collector.env_detect import EnvironmentDetector, detect_container_runtime
 from galaxy_diag.collector.hardware import HardwareCollector
 from galaxy_diag.collector.storage import StorageCollector
-from galaxy_diag.shared.types import ContainerRuntime, EnvInfo, EnvironmentType
+from galaxy_diag.shared.types import (
+    ContainerRuntime,
+    EnvInfo,
+    EnvironmentType,
+    HardwareInfo,
+    StorageInfo,
+)
 
 __all__ = ["collect_env"]
 
@@ -23,8 +29,11 @@ __all__ = ["collect_env"]
 _RAW_OUTPUT_MAX_CHARS = 2048
 
 
-def collect_env() -> EnvInfo:
+def collect_env(*, skip_hardware: bool = False) -> EnvInfo:
     """环境感知顶层编排：识别环境类型 → 采集软硬件 → 组装 EnvInfo
+
+    Args:
+        skip_hardware: 是否跳过完整硬件和存储采集（C类精简采集）
 
     Returns:
         EnvInfo 结构化环境信息
@@ -42,24 +51,33 @@ def collect_env() -> EnvInfo:
     if env_type == EnvironmentType.CONTAINER:
         container_runtime = detect_container_runtime(warnings)
 
-    # 3. 硬件采集
-    hw_collector = HardwareCollector()
-    hardware = hw_collector.collect(env_type, warnings)
+    # 3. 硬件采集（C类：可按需跳过）
+    if skip_hardware:
+        hardware = HardwareInfo()
+        storage: list[StorageInfo] = []
+        hw_raw_output: dict[str, str] = {}
+        st_raw_output: dict[str, str] = {}
+        warnings.append("已跳过完整硬件和存储采集（问题类型不需要）")
+    else:
+        hw_collector = HardwareCollector()
+        hardware = hw_collector.collect(env_type, warnings)
 
-    # 4. 存储采集
-    st_collector = StorageCollector()
-    storage = st_collector.collect(env_type, warnings)
+        st_collector = StorageCollector()
+        storage = st_collector.collect(env_type, warnings)
 
-    # 5. 环境类型级别的采集提示
+        hw_raw_output = hw_collector.raw_output
+        st_raw_output = st_collector.raw_output
+
+    # 4. 环境类型级别的采集提示
     _append_env_type_warnings(env_type, container_runtime, warnings)
 
-    # 6. 汇总 raw_output（截断）
+    # 5. 汇总 raw_output（截断）
     raw = {}
-    raw.update(hw_collector.raw_output)
-    raw.update(st_collector.raw_output)
+    raw.update(hw_raw_output)
+    raw.update(st_raw_output)
     raw = _truncate_raw_output(raw)
 
-    # 7. 容器内 CLI 可用性检测（容器内通常无 docker/kubectl CLI）
+    # 6. 容器内 CLI 可用性检测（容器内通常无 docker/kubectl CLI）
     has_docker_cli = shutil.which("docker") is not None
     has_kubectl_cli = shutil.which("kubectl") is not None
 

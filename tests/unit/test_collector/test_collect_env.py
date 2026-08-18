@@ -111,3 +111,41 @@ class TestCollectEnv:
         assert isinstance(env_info.hardware.disks[0], DiskInfo)
         assert isinstance(env_info.hardware.nics[0], NicInfo)
         assert env_info.hardware.disks[0].model == "sda"
+
+
+class TestCollectEnvSkipHardware:
+    def test_skip_hardware_skips_hw_and_storage(self):
+        """skip_hardware=True 时跳过硬件和存储采集"""
+        with patch("galaxy_diag.collector.EnvironmentDetector") as MockDetector:
+            MockDetector.return_value.detect.return_value = EnvironmentType.BARE_METAL
+
+            env_info = collect_env(skip_hardware=True)
+
+        assert isinstance(env_info, EnvInfo)
+        assert env_info.env_type == EnvironmentType.BARE_METAL
+        # hardware 和 storage 应为默认空值
+        assert env_info.hardware.cpu_model == ""
+        assert env_info.hardware.cpu_cores == 0
+        assert env_info.hardware.disks == []
+        assert env_info.hardware.raid_cards == []
+        assert env_info.hardware.nics == []
+        assert env_info.storage == []
+
+    def test_skip_hardware_false_collects_normally(self):
+        """skip_hardware=False 时正常采集"""
+        mock_hw = HardwareInfo(cpu_model="Intel Xeon", cpu_cores=8)
+        mock_storage = [StorageInfo(storage_type="local", mount_path="/")]
+
+        with patch("galaxy_diag.collector.EnvironmentDetector") as MockDetector, \
+             patch("galaxy_diag.collector.HardwareCollector") as MockHW, \
+             patch("galaxy_diag.collector.StorageCollector") as MockST:
+            MockDetector.return_value.detect.return_value = EnvironmentType.BARE_METAL
+            MockHW.return_value.collect.return_value = mock_hw
+            MockHW.return_value.raw_output = {}
+            MockST.return_value.collect.return_value = mock_storage
+            MockST.return_value.raw_output = {}
+
+            env_info = collect_env(skip_hardware=False)
+
+        assert env_info.hardware.cpu_model == "Intel Xeon"
+        assert len(env_info.storage) == 1
