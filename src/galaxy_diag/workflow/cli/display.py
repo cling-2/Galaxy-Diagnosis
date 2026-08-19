@@ -100,12 +100,14 @@ def print_stub_notice(req_id: str, description: str) -> None:
 # ===== 领域渲染组件 =====
 
 
-def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
+def print_env_info(env_info: EnvInfo, *, format: str = "table", skip_hardware: bool = False) -> None:
     """渲染环境识别结果
 
     Args:
         env_info: 环境采集结果
         format: 输出格式 "table" | "json" | "yaml"
+        skip_hardware: 是否跳过了完整硬件/存储采集（C类精简采集）。
+            True 时不打印硬件信息表和存储信息表，仅显示跳过提示。
     """
     console = get_console()
     env_label = ENV_TYPE_LABELS.get(env_info.env_type, str(env_info.env_type))
@@ -119,7 +121,23 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
     console.print(f"[heading]🔍 环境识别结果[/heading]")
     console.print(f"  环境类型: [info]{env_label}[/info]\n")
 
-    # 硬件信息表格
+    # C类：跳过完整硬件采集时，不打印空表，仅显示跳过提示
+    if skip_hardware:
+        console.print("[dim]📋 硬件信息: 已跳过完整硬件和存储采集（问题类型不需要）[/dim]")
+    else:
+        _render_hardware_table(env_info)
+        _render_storage_table(env_info)
+
+    # 采集提示
+    if env_info.collection_warnings:
+        console.print("\n[warning]⚠ 采集提示[/warning]")
+        for w in env_info.collection_warnings:
+            console.print(f"  - {w}")
+
+
+def _render_hardware_table(env_info: EnvInfo) -> None:
+    """渲染硬件信息表"""
+    console = get_console()
     hw = env_info.hardware
     console.print("[heading]📋 硬件信息[/heading]")
     table = Table(show_header=True, header_style="bold", pad_edge=False)
@@ -153,7 +171,10 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
 
     console.print(table)
 
-    # 存储信息
+
+def _render_storage_table(env_info: EnvInfo) -> None:
+    """渲染存储信息表"""
+    console = get_console()
     if env_info.storage:
         console.print("\n[heading]💾 存储信息[/heading]")
         st_table = Table(show_header=True, header_style="bold", pad_edge=False)
@@ -165,12 +186,6 @@ def print_env_info(env_info: EnvInfo, *, format: str = "table") -> None:
             st_table.add_row(st.storage_type, st.mount_path, st.filesystem)
 
         console.print(st_table)
-
-    # 采集提示
-    if env_info.collection_warnings:
-        console.print("\n[warning]⚠ 采集提示[/warning]")
-        for w in env_info.collection_warnings:
-            console.print(f"  - {w}")
 
 
 def print_diagnostic_context(ctx: DiagnosticContext) -> None:

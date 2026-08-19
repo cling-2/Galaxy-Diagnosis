@@ -7,6 +7,7 @@ import io
 import json
 
 from dataclasses import asdict
+from unittest.mock import patch
 
 from rich.console import Console
 from rich.table import Table
@@ -127,3 +128,36 @@ class TestCollectionWarningsRendering:
         env_info = EnvInfo()
         assert env_info.collection_warnings == []
         print_env_info(env_info, format="table")
+
+
+class TestPrintEnvInfoSkipHardware:
+    """C类：skip_hardware=True 时不打印硬件/存储表，仅显示跳过提示"""
+
+    def _capture(self, env_info, skip_hardware):
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=True, width=120, no_color=True)
+        with patch("galaxy_diag.workflow.cli.display.get_console", return_value=console):
+            print_env_info(env_info, skip_hardware=skip_hardware)
+        return buf.getvalue()
+
+    def test_skip_hardware_shows_skip_message(self):
+        env_info = make_env_info()
+        out = self._capture(env_info, skip_hardware=True)
+        assert "已跳过完整硬件和存储采集" in out
+
+    def test_skip_hardware_hides_hardware_table(self):
+        """skip_hardware=True 时不渲染硬件信息表（不含表头"硬件信息"独立标题行内容）"""
+        env_info = make_env_info()
+        out = self._capture(env_info, skip_hardware=True)
+        # 硬件表内容不应出现
+        assert "Intel Xeon E5-2680 v4" not in out
+        assert "MegaRAID" not in out
+        # 存储表内容不应出现
+        assert "/mnt/data" not in out
+
+    def test_skip_hardware_false_shows_tables(self):
+        """skip_hardware=False 时正常渲染硬件/存储表"""
+        env_info = make_env_info()
+        out = self._capture(env_info, skip_hardware=False)
+        assert "Intel Xeon E5-2680 v4" in out
+        assert "/mnt/data" in out

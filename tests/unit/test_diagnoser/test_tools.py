@@ -134,6 +134,61 @@ class TestCollectServiceLogs:
         assert result[0].level == "ERROR"  # 最高级
 
 
+# ===== collect_service_logs：容器内 CLI 缺失回退（防幻觉） =====
+
+
+class TestCollectServiceLogsContainerFallback:
+    """容器内 docker/kubectl CLI 缺失时回退到文件日志，不抛硬错误
+
+    回归：此前 _collect_logs_docker/_collect_logs_k8s 在 CLI 缺失时 re-raise，
+    产生 "docker 未安装" 警告并经 prompts.py "## 采集受限" 进入 LLM 上下文，
+    导致 LLM 幻觉（如"docker 未安装导致挂载失败"）。
+    """
+
+    def test_docker_cli_missing_falls_back_to_files_not_raise(self):
+        """Container+Docker，docker CLI 缺失 → 回退文件日志，不抛异常"""
+        log_content = "ERROR mount failed\nINFO ok\n"
+        # _run_cmd 抛 CollectorToolNotFoundError 模拟 docker 未安装
+        with patch("galaxy_diag.diagnoser.tools._run_cmd",
+                   side_effect=CollectorToolNotFoundError("docker 未安装")), \
+             patch("galaxy_diag.diagnoser.tools._read_file", return_value=log_content):
+            result = tools.collect_service_logs(
+                EnvironmentType.CONTAINER, ContainerRuntime.DOCKER,
+                {"svc": "/var/log/svc.log"},
+                ["mount", "error"],
+            )
+        # 不抛异常，返回文件日志片段（而非空 + 警告）
+        assert isinstance(result, list)
+        assert any("mount failed" in s.content for s in result)
+
+    def test_docker_cli_missing_no_logs_returns_empty_not_raise(self):
+        """Container+Docker，docker CLI 缺失且无文件日志 → 返回空列表，不抛异常"""
+        with patch("galaxy_diag.diagnoser.tools._run_cmd",
+                   side_effect=CollectorToolNotFoundError("docker 未安装")), \
+             patch("galaxy_diag.diagnoser.tools._read_file", return_value=None):
+            result = tools.collect_service_logs(
+                EnvironmentType.CONTAINER, ContainerRuntime.DOCKER,
+                {"svc": "/var/log/svc.log"},
+                ["error"],
+            )
+        assert result == []
+
+    def test_k8s_cli_missing_falls_back_to_files_not_raise(self):
+        """Container+K8s，kubectl 缺失 → 回退文件日志，不抛异常"""
+        log_content = "Warning kubelet slow\n"
+        with patch("galaxy_diag.diagnoser.tools._run_cmd",
+                   side_effect=CollectorToolNotFoundError("kubectl 未安装")), \
+             patch("galaxy_diag.diagnoser.tools._read_file", return_value=log_content):
+            result = tools.collect_service_logs(
+                EnvironmentType.CONTAINER, ContainerRuntime.KUBERNETES,
+                {"kubelet": "/var/log/kubelet.log"},
+                {"warning", "kubelet"},
+            )
+        assert isinstance(result, list)
+        # k8s 路径仅读 kubelet 文件，应含文件日志
+        assert any("kubelet slow" in s.content for s in result)
+
+
 # ===== collect_system_resources =====
 
 

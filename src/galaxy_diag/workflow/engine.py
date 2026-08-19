@@ -342,11 +342,7 @@ class WorkflowEngine:
         env_info = collect_env(skip_hardware=skip_hw)
 
         self.state.env_info = env_info
-        display.print_env_info(env_info)
-
-        # C类：提示硬件跳过
-        if skip_hw:
-            self._console.print("[dim]已跳过完整硬件采集（问题类型不需要）[/dim]")
+        display.print_env_info(env_info, skip_hardware=skip_hw)
 
         # B类：规则预匹配，CONFIRMED 则跳过 COLLECTING + DIAGNOSING
         if env_info is not None:

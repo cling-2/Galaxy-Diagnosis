@@ -392,9 +392,10 @@ def _collect_logs_k8s(
         rc, stdout, stderr = _run_cmd(
             ["kubectl", "logs", "-n", "kube-system", "-l", "k8s-app=kubelet", "--tail=100"]
         )
-    except CollectorToolNotFoundError as e:
-        # kubectl 不可用则抛出，让上层双路处理
-        raise e
+    except CollectorToolNotFoundError:
+        # kubectl 不可用（典型：K8s Pod 内未挂载 kubectl），
+        # 已有文件日志则返回，不抛"kubectl 未安装"硬错误避免污染 LLM 上下文
+        return snippets
     if rc == 0 and stdout.strip():
         filtered, level = _filter_log_lines(stdout, keywords)
         if filtered:
@@ -420,10 +421,15 @@ def _collect_logs_docker(
     )
     snippets.extend(file_snippets)
     # 尝试列出容器并取日志（取前几个）
+    # docker CLI 不可用时（典型：容器内部未挂载 docker.sock），
+    # 回退到读容器内可见的日志文件，避免抛出"docker 未安装"硬错误
+    # 污染 LLM 上下文导致幻觉
     try:
         rc, stdout, _ = _run_cmd(["docker", "ps", "--format", "{{.ID}}\\t{{.Names}}"])
-    except CollectorToolNotFoundError as e:
-        raise e
+    except CollectorToolNotFoundError:
+        # 回退：读容器内可见的日志文件（同 UNKNOWN 运行时的做法）
+        snippets.extend(_collect_logs_from_files(log_paths, keywords))
+        return snippets
     if rc != 0:
         return snippets
     containers = []
