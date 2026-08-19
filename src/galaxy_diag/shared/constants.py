@@ -36,6 +36,8 @@ AUDIT_RESULT_LABELS: dict[str, str] = {
     "failure": "失败",
     "rollback": "已回滚",
     "rejected": "已拒绝",
+    "confirmed": "已确认",
+    "verify_failed": "验证失败",
 }
 
 # 银河平台关键组件清单（供诊断采集工具预置）
