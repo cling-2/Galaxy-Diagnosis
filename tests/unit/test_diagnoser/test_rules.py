@@ -192,3 +192,75 @@ class TestMatchRules:
         assert result.rule_id if hasattr(result, 'rule_id') else True
         # container_kubelet_down 是容器特定规则，应优先
         assert "Kubelet" in result.root_cause
+
+
+class TestPrematchRulesByDescription:
+    """B 类：prematch_rules_by_description 规则预匹配（决定是否跳过 COLLECTING）"""
+
+    def test_crashloop_confirmed_match(self):
+        """Pod CrashLoopBackOff → CONFIRMED → 返回 DiagnosisResult"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "Pod 出现 CrashLoopBackOff",
+            EnvironmentType.CONTAINER,
+        )
+        assert result is not None
+        assert result.confidence == Confidence.CONFIRMED
+
+    def test_oom_confirmed_match(self):
+        """OOM → CONFIRMED → 返回 DiagnosisResult"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "Out of memory OOM killed",
+            EnvironmentType.BARE_METAL,
+        )
+        assert result is not None
+        assert result.confidence == Confidence.CONFIRMED
+
+    def test_container_rule_not_matching_bare_metal(self):
+        """容器特定规则在裸金属环境不匹配"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "CrashLoopBackOff",
+            EnvironmentType.BARE_METAL,
+        )
+        assert result is None
+
+    def test_suspected_not_returned(self):
+        """SUSPECTED 规则不触发预匹配（保守）"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        # "unreachable" 匹配 network_unreachable（SUSPECTED）
+        result = prematch_rules_by_description(
+            "目标 unreachable",
+            EnvironmentType.BARE_METAL,
+        )
+        # SUSPECTED 不触发 B 类跳过
+        assert result is None or result.confidence != Confidence.SUSPECTED
+
+    def test_no_match_returns_none(self):
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "something unrelated xyz",
+            EnvironmentType.BARE_METAL,
+        )
+        assert result is None
+
+    def test_io_error_confirmed_match(self):
+        """I/O error → CONFIRMED"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "磁盘 I/O error",
+            EnvironmentType.BARE_METAL,
+        )
+        assert result is not None
+        assert result.confidence == Confidence.CONFIRMED
+
+    def test_nfs_stale_confirmed_match(self):
+        """stale file handle + nfs → CONFIRMED"""
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        result = prematch_rules_by_description(
+            "nfs stale file handle",
+            EnvironmentType.VM,
+        )
+        assert result is not None
+        assert result.confidence == Confidence.CONFIRMED

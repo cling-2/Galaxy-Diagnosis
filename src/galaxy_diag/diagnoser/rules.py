@@ -243,3 +243,69 @@ def match_rules(ctx: DiagnosticContext) -> DiagnosisResult | None:
         fault_scope=matched_rule.fault_scope,
         diagnosis_source=DiagnosisSource.RULE_MATCH,
     )
+
+
+def prematch_rules_by_description(
+    problem_description: str,
+    env_type: EnvironmentType,
+) -> DiagnosisResult | None:
+    """基于问题描述的规则预匹配（B类：决定是否跳过 COLLECTING）
+
+    仅对 problem_description 做关键词 AND 匹配，不需要采集数据。
+    仅 CONFIRMED 规则触发跳过（SUSPECTED 不跳过，保守）。
+
+    与 match_rules() 的区别：
+    - match_rules 消费完整 DiagnosticContext（含日志/组件状态等采集数据），
+      在 COLLECTING 短路预检和 DIAGNOSING 规则快路径两处调用。
+    - 本函数仅消费 problem_description 文本，在 ENV_RECOGNISING 之后、
+      COLLECTING 之前调用，用于判定是否可跳过采集（B 类短路）。
+
+    Args:
+        problem_description: 用户问题描述
+        env_type: 环境类型（来自 ENV_RECOGNISING）
+
+    Returns:
+        匹配到 CONFIRMED 规则返回 DiagnosisResult（source=RULE_MATCH），
+        未匹配或仅命中 SUSPECTED 规则时返回 None
+    """
+    if not problem_description:
+        return None
+
+    lower = problem_description.lower()
+
+    matched_rule: DiagnosisRule | None = None
+    matched_env_specific = False
+
+    for rule in DIAGNOSIS_RULES:
+        # 1. 仅 CONFIRMED 规则触发跳过（SUSPECTED 不跳过，保守）
+        if rule.confidence != Confidence.CONFIRMED:
+            continue
+
+        # 2. 环境过滤（env_type 为 EnvironmentType 枚举，可直接成员判断）
+        if rule.env_types and env_type not in rule.env_types:
+            continue
+
+        # 3. 条件匹配（AND 逻辑：所有关键词都必须命中）
+        all_hit = all(kw.lower() in lower for kw in rule.match_conditions)
+        if not all_hit:
+            continue
+
+        # 4. 多条匹配时：环境特定规则优先
+        is_env_specific = bool(rule.env_types)
+        if matched_rule is None or (is_env_specific and not matched_env_specific):
+            matched_rule = rule
+            matched_env_specific = is_env_specific
+
+    if matched_rule is None:
+        return None
+
+    return DiagnosisResult(
+        root_cause=matched_rule.root_cause,
+        confidence=matched_rule.confidence,
+        missing_info=[],
+        evidence=matched_rule.evidence_template[:],
+        env_type=env_type,
+        investigation_steps=matched_rule.investigation_steps[:],
+        fault_scope=matched_rule.fault_scope,
+        diagnosis_source=DiagnosisSource.RULE_MATCH,
+    )
