@@ -328,11 +328,40 @@ class WorkflowEngine:
 
         调用 collector 模块识别环境类型、采集软硬件信息。
         用户可见步骤 1/7: 环境识别
+
+        B类：完成后检查规则预匹配，CONFIRMED 则跳过 COLLECTING。
+        C类：根据问题类型决定是否跳过完整硬件采集。
         """
-        env_info = collect_env()
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+
+        # C类：判断是否跳过完整硬件采集
+        skip_hw = not should_collect_hardware(self.state.problem_description)
+        self.state.should_skip_hardware = skip_hw
+
+        env_info = collect_env(skip_hardware=skip_hw)
 
         self.state.env_info = env_info
         display.print_env_info(env_info)
+
+        # C类：提示硬件跳过
+        if skip_hw:
+            self._console.print("[dim]已跳过完整硬件采集（问题类型不需要）[/dim]")
+
+        # B类：规则预匹配，CONFIRMED 则跳过 COLLECTING + DIAGNOSING
+        if env_info:
+            pre_diagnosis = prematch_rules_by_description(
+                self.state.problem_description,
+                env_info.env_type,
+            )
+            if pre_diagnosis is not None:
+                self.state.diagnosis = pre_diagnosis
+                self.state.should_skip_collecting = True
+                display.print_diagnosis(pre_diagnosis)
+                self._console.print("[dim]已知故障模式，跳过信息采集和深度诊断[/dim]")
+                self._save()
+                self._transition(WorkflowStep.PLANNING)
+                return
 
         self._transition(WorkflowStep.COLLECTING)
 
@@ -343,6 +372,12 @@ class WorkflowEngine:
         产出 DiagnosticContext 写入 WorkflowState。
         用户可见步骤 2/7: 信息收集
         """
+        # B类：已知故障模式跳过采集
+        if self.state.should_skip_collecting:
+            self._console.print("[dim]已知故障模式，跳过信息采集[/dim]")
+            self._transition(WorkflowStep.DIAGNOSING)
+            return
+
         from galaxy_diag.diagnoser import build_diagnostic_context
         from galaxy_diag.diagnoser.rules import match_rules
 
@@ -363,6 +398,25 @@ class WorkflowEngine:
         self.state.diagnostic_context = ctx
         display.print_diagnostic_context(ctx)
         self._save()
+
+        # 反幻觉：事实校验（采集后、诊断前）
+        from galaxy_diag.diagnoser.hallucination_guard import check_facts
+
+        hallucination_result = check_facts(
+            self.state.problem_description, ctx,
+        )
+        if hallucination_result is not None:
+            self.state.hallucination_check_result = hallucination_result.rule_id
+            self._save()
+
+            if hallucination_result.contradiction:
+                self._console.print(
+                    f"\n[warning]⚠ 反幻觉校验: {hallucination_result.message}[/warning]"
+                )
+                # 写审计日志
+                self._write_audit(result="failure", user_input="")
+                self._mark_done(f"反幻觉拦截: {hallucination_result.message}")
+                return
 
         # 短路预检：已知故障模式可跳过 DIAGNOSING（REQ-F-02 验收标准 4）
         pre_diagnosis = match_rules(ctx)
