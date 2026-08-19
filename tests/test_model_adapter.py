@@ -187,3 +187,53 @@ class TestErrorHints:
         with pytest.raises(ModelCallError) as exc_info:
             adapter.chat([{"role": "user", "content": "x"}])
         assert "不存在" in str(exc_info.value) or "not found" in str(exc_info.value).lower()
+
+
+# ============================================================
+# embed
+# ============================================================
+class TestEmbed:
+    def test_embed_returns_vectors(self, adapter):
+        data1 = MagicMock(); data1.embedding = [0.1, 0.2, 0.3]
+        data2 = MagicMock(); data2.embedding = [0.4, 0.5, 0.6]
+        resp = MagicMock(); resp.data = [data1, data2]
+        adapter.client.embeddings.create.return_value = resp
+        adapter.config.embed_model = "nomic-embed-text"
+        vecs = adapter.embed(["hello", "world"])
+        assert vecs == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        adapter.client.embeddings.create.assert_called_once()
+
+    def test_embed_passes_embed_model(self, adapter):
+        resp = MagicMock(); resp.data = [MagicMock(embedding=[0.0])]
+        adapter.client.embeddings.create.return_value = resp
+        adapter.config.embed_model = "bge-m3"
+        adapter.embed(["x"])
+        kwargs = adapter.client.embeddings.create.call_args.kwargs
+        assert kwargs["model"] == "bge-m3"
+
+    def test_embed_explicit_model_overrides_config(self, adapter):
+        resp = MagicMock(); resp.data = [MagicMock(embedding=[0.0])]
+        adapter.client.embeddings.create.return_value = resp
+        adapter.config.embed_model = "bge-m3"
+        adapter.embed(["x"], model="nomic-embed-text")
+        assert adapter.client.embeddings.create.call_args.kwargs["model"] == "nomic-embed-text"
+
+    def test_embed_empty_model_raises(self, adapter):
+        adapter.config.embed_model = ""
+        with pytest.raises(ModelCallError):
+            adapter.embed(["x"])
+
+    def test_embed_call_failure_raises(self, adapter):
+        adapter.config.embed_model = "nomic-embed-text"
+        adapter.client.embeddings.create.side_effect = Exception("boom")
+        with pytest.raises(ModelCallError):
+            adapter.embed(["x"])
+
+
+def test_mock_embed_deterministic():
+    from galaxy_diag.model.mock_client import MockModelAdapter
+    m = MockModelAdapter()
+    v1 = m.embed(["网络不通"])
+    v2 = m.embed(["网络不通"])
+    assert v1 == v2
+    assert len(v1) == 1 and len(v1[0]) > 0

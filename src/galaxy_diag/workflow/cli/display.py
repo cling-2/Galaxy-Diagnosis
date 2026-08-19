@@ -345,6 +345,16 @@ def print_diagnosis(result: DiagnosisResult) -> None:
         for item in result.missing_info:
             console.print(f"  [dim]- {item}[/dim]")
 
+    # 来源标注（REQ-X-02：通用知识 vs 客户特有案例）
+    if result.referenced_knowledge:
+        ids = ", ".join(r.case_id for r in result.referenced_knowledge)
+        console.print(
+            f"\n[info]📎 参考客户特有案例 {len(result.referenced_knowledge)} 条: "
+            f"{ids}[/info]"
+        )
+    else:
+        console.print("\n[dim]📎 本诊断基于通用知识[/dim]")
+
 
 def print_fix_proposal(proposal: FixProposal) -> None:
     """渲染修复建议

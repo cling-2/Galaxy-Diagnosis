@@ -12,6 +12,7 @@ class LLMConfig:
     timeout: int = 120
     max_retries: int = 3
     max_tokens: int = 1024                  # 默认最大输出 token 数，防止无限生成
+    embed_model: str = ""                       # embedding 模型名（空=未启用 RAG）；如 nomic-embed-text
 
 
 @dataclass
@@ -25,7 +26,15 @@ class HardwareRequirement:
 
 
 @dataclass
+class KnowledgeConfig:
+    """客户知识库检索配置（REQ-X-02）"""
+    top_k: int = 3                  # 检索返回的最大案例数
+    min_similarity: float = 0.0     # 最低余弦相似度阈值，0.0=不过滤
+
+
+@dataclass
 class AppConfig:
     """应用全局配置"""
     llm: LLMConfig = field(default_factory=LLMConfig)
     hardware: HardwareRequirement = field(default_factory=HardwareRequirement)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)

@@ -140,6 +140,19 @@ class DiagnosisSource(str, Enum):
     ERROR_FALLBACK = "error_fallback"  # LLM 调用失败（服务不可用），降级兜底
 
 
+@dataclass
+class KnowledgeRef:
+    """诊断结果中引用的客户案例（来源标注用，REQ-X-02）
+
+    定义在 shared 层以避免 shared → knowledge 反向依赖；
+    knowledge/types.py 从此处导入复用。
+    """
+
+    case_id: str
+    similarity: float                           # 余弦相似度
+    summary: str                                # 案例摘要（输出标注用，截断）
+
+
 class Confidence(str, Enum):
     """诊断结论置信度"""
 
@@ -160,6 +173,7 @@ class DiagnosisResult:
     investigation_steps: list[str] = field(default_factory=list)  # 未知故障的可执行排查步骤
     fault_scope: str = ""                                         # 可能的故障范围描述
     diagnosis_source: DiagnosisSource = DiagnosisSource.LLM       # 结论来源
+    referenced_knowledge: list["KnowledgeRef"] = field(default_factory=list)  # 引用的客户案例（来源标注，REQ-X-02）
 
 
 # ===== 修复生成 =====

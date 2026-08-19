@@ -72,6 +72,25 @@ class MockModelAdapter:
         from galaxy_diag.model.client import ChatResponse
         return ChatResponse(content=self.chat(messages), tool_calls=[], finish_reason="stop")
 
+    def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
+        """模拟向量化：按文本内容返回确定性固定向量（供 RAG 单测）
+
+        不连接真实服务。对相同文本返回相同向量，保证检索链路可复现。
+        用文本字符的简单 hash 生成 32 维向量，使相似文本（共享词）向量相近。
+        """
+        import hashlib
+
+        def _vec(text: str) -> list[float]:
+            # 取文本的 8 个 4 字节窗口作为种子，构造 32 维向量并 L2 归一化
+            raw = [0.0] * 32
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            for i in range(32):
+                raw[i] = (digest[i] - 128) / 128.0
+            norm = sum(x * x for x in raw) ** 0.5 or 1.0
+            return [x / norm for x in raw]
+
+        return [_vec(t) for t in texts]
+
     # ===== 预设响应 =====
 
     def _mock_diagnose_response(self, full_text: str) -> str:

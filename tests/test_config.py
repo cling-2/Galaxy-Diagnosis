@@ -170,3 +170,31 @@ class TestLoadConfigEnvOverride:
         # localhost 不是外网地址
         assert "localhost" in cfg.llm.base_url
         assert "127.0.0.1" in cfg.llm.base_url or "localhost" in cfg.llm.base_url
+
+
+def test_llm_config_has_embed_model_default_empty():
+    from galaxy_diag.config.defaults import LLMConfig
+    cfg = LLMConfig()
+    assert cfg.embed_model == ""
+
+
+def test_app_config_has_knowledge_defaults():
+    from galaxy_diag.config.defaults import AppConfig, KnowledgeConfig
+    cfg = AppConfig()
+    assert isinstance(cfg.knowledge, KnowledgeConfig)
+    assert cfg.knowledge.top_k == 3
+    assert cfg.knowledge.min_similarity == 0.0
+
+
+def test_load_config_reads_embed_model_and_knowledge(tmp_path):
+    import yaml
+    from galaxy_diag.config.settings import load_config
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text(yaml.dump({
+        "llm": {"model": "qwen3:1.7b", "embed_model": "nomic-embed-text"},
+        "knowledge": {"top_k": 5, "min_similarity": 0.7},
+    }), encoding="utf-8")
+    cfg = load_config(str(cfg_file))
+    assert cfg.llm.embed_model == "nomic-embed-text"
+    assert cfg.knowledge.top_k == 5
+    assert cfg.knowledge.min_similarity == 0.7

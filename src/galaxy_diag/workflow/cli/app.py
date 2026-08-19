@@ -52,6 +52,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("galaxy_diag.workflow.cli.cmd_audit_log", "audit-log"),
     ("galaxy_diag.workflow.cli.cmd_run", "run"),
     ("galaxy_diag.workflow.cli.cmd_completion", "completion"),
+    ("galaxy_diag.workflow.cli.cmd_kb", "kb"),
 ]
 
 
@@ -60,14 +61,21 @@ _COMMANDS: list[tuple[str, str]] = [
 # 不调用模型，跳过预检。新增需要预检的命令时在此追加命令名即可。
 _PRECHECK_REQUIRED_COMMANDS: frozenset[str] = frozenset({"run", "diagnose"})
 
+# kb 子命令中需要 embedding（因而需预检）的子动作
+_KB_PRECHECK_ACTIONS: frozenset[str] = frozenset({"import", "reindex"})
+
 
 def _needs_precheck(args: argparse.Namespace) -> bool:
     """是否需要执行硬件预检
 
     仅当子命令在 _PRECHECK_REQUIRED_COMMANDS 中、且非 --mock 模式时返回 True。
     --mock 模式使用预设响应、不连接真实 LLM，无需硬件资源预检。
+    kb import/reindex 需要 embedding 模型，也触发预检；kb list/delete 不需要。
     """
     if args.command not in _PRECHECK_REQUIRED_COMMANDS:
+        # kb import/reindex 需 embedding，需预检；kb list/delete 不需要
+        if args.command == "kb":
+            return getattr(args, "kb_action", None) in _KB_PRECHECK_ACTIONS
         return False
     # mock 属性仅 run 子命令定义；其余命令 getattr 回退为 False
     if getattr(args, "mock", False):
@@ -143,7 +151,11 @@ def _run_precheck(*, skip: bool, config_path: str | None) -> None:
 
     try:
         config = load_config(config_path)
-        result = HardwarePrechecker(config.hardware).check()
+        result = HardwarePrechecker(
+            config.hardware,
+            embed_model=config.llm.embed_model,
+            base_url=config.llm.base_url,
+        ).check()
         print_precheck_result(result)
         if not result.passed:
             console.print("\n[danger]✗ 硬件资源不满足最低要求，拒绝启动。[/danger]")

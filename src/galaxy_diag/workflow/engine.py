@@ -156,16 +156,19 @@ class WorkflowEngine:
         self._fix_retry_feedback: list[str] | None = None  # D-03 CRITICAL 失败反馈（回退 PLANNING 时回灌）
 
         # 初始化 ModelAdapter（延迟导入避免循环依赖）
+        from galaxy_diag.config.settings import load_config
+
+        config = load_config()
+        self._config = config
+
         if mock:
             from galaxy_diag.model.mock_client import MockModelAdapter
 
             self._model_adapter = MockModelAdapter()
             self._console.print("[dim]  [Mock 模式] 使用预设响应，不连接真实推理服务[/dim]")
         else:
-            from galaxy_diag.config.settings import load_config
             from galaxy_diag.model.client import ModelAdapter
 
-            config = load_config()
             self._model_adapter = ModelAdapter(config.llm)
 
     # ===== 公开接口 =====
@@ -445,6 +448,7 @@ class WorkflowEngine:
         用户可见步骤 3/7: 根因分析
         """
         from galaxy_diag.diagnoser import diagnose
+        from galaxy_diag.knowledge.store import KnowledgeStore
 
         if not self.state.diagnostic_context:
             raise WorkflowError(
@@ -466,6 +470,8 @@ class WorkflowEngine:
                 env_info=self.state.env_info,
                 diagnostic_context=self.state.diagnostic_context,
                 model_adapter=self._model_adapter,
+                kb_store=KnowledgeStore.load(),
+                knowledge_config=self._config.knowledge,
             )
 
         self.state.diagnosis = diagnosis

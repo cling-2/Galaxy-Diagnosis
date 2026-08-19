@@ -202,6 +202,67 @@ ollama list
 # export GALAXY_LLM_MODEL="新模型名"
 ```
 
+## RAG 客户知识库 embedding 模型（REQ-X-02，选做）
+
+启用客户知识库语义检索（`galaxy-diag kb import` 导入客户故障案例，诊断时自动检索相似案例并注入 Prompt）需额外部署一个 embedding 模型。
+
+> **离线约束**：与 chat 模型完全一致——客户机不可 `ollama pull`（需联网）。必须在联网准备机下载 `.gguf` 权重，传输到客户机后用 `ollama create` 离线导入。
+
+### 1. 联网准备机下载 embedding 模型权重
+
+```bash
+# 在联网准备机上下载 embedding 模型的 gguf 文件（如 nomic-embed-text）
+# 放入 deploy/offline/ 目录，随 chat 模型介质一并传输
+# curl -L -o deploy/offline/nomic-embed-text.gguf <gguf 下载地址>
+```
+
+### 2. 传输到客户机并离线导入
+
+```bash
+# 传输（同 chat 模型方式：U 盘 / 内网 / scp）
+scp deploy/offline/nomic-embed-text.gguf user@客户机:~/galaxy-diag/deploy/offline/
+
+# 在客户机上离线导入（从 gguf 文件创建模型，无需联网）
+echo "FROM /root/galaxy-diag/deploy/offline/nomic-embed-text.gguf" | \
+  ollama create nomic-embed-text -f -
+
+# 确认模型已存在
+ollama list   # 应显示 nomic-embed-text
+```
+
+> 也可直接从文件流导入：`ollama create nomic-embed-text -f - < deploy/offline/nomic-embed-text.gguf`
+
+### 3. 配置启用
+
+```bash
+# 修改 config.yaml，指定 embedding 模型名（留空则禁用 RAG，诊断不走知识库检索）
+# llm.embed_model: "nomic-embed-text"
+# 或通过环境变量覆盖：
+# export GALAXY_LLM_EMBED_MODEL="nomic-embed-text"
+```
+
+`config.yaml` 中 `llm.embed_model` 为空字符串时，RAG 自动禁用（`diagnose` 内跳过 `retrieve_similar`，不调用 embed），诊断走纯规则 + LLM 路径。
+
+### 4. 导入客户故障案例（客户机本地操作，无需联网）
+
+embedding 模型导入后，即可在客户机上管理客户知识库：
+
+```bash
+# 导入案例文件（markdown + frontmatter 元数据）
+galaxy-diag kb import /path/to/case.md
+
+# 列出已导入案例
+galaxy-diag kb list
+
+# 删除指定案例
+galaxy-diag kb delete <case_id>
+
+# embedding 模型更换后重建索引（向量维度变化时必须执行）
+galaxy-diag kb reindex
+```
+
+> `kb import` / `kb reindex` 会触发 embedding 模型预检（确认 `embed_model` 已导入且 Ollama 可用）；`kb list` / `kb delete` 为纯本地操作，不依赖 embedding 服务。案例存储于 `~/.galaxy-diag/knowledge_base/`（可用 `GALAXY_KB_DIR` 环境变量覆盖）。
+
 ## 离线验证清单
 
 部署完成后，按以下步骤验证红线 1（零公网依赖）：

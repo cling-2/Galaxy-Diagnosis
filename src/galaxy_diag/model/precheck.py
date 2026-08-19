@@ -39,8 +39,10 @@ class PrecheckResult:
 class HardwarePrechecker:
     """硬件资源预检器"""
 
-    def __init__(self, req: HardwareRequirement):
+    def __init__(self, req: HardwareRequirement, embed_model: str = "", base_url: str = ""):
         self.req = req
+        self.embed_model = embed_model
+        self.base_url = base_url
 
     def check(self) -> PrecheckResult:
         """执行硬件预检
@@ -53,6 +55,9 @@ class HardwarePrechecker:
             self._check_ram(),
             self._check_disk(),
         ]
+        # embedding 模型可用性体检（REQ-X-02）：仅当配置了 embed_model 时
+        if self.embed_model:
+            items.append(self._check_embed_model())
         gpu_item = self._check_gpu()
         items.append(gpu_item)
 
@@ -146,6 +151,39 @@ class HardwarePrechecker:
         )
 
     # ---------- 底层采集方法 ----------
+
+    def _check_embed_model(self) -> CheckItem:
+        """检测 embedding 模型可用性（通过 Ollama /api/embeddings）
+
+        命中即视为通过；连不上 Ollama 或模型不存在视为未通过。
+        """
+        import json as _json
+        import urllib.request
+        passed = False
+        note = ""
+        # Ollama base_url 形如 http://host:port/v1，原生 API 在 /api/embeddings
+        api_url = self.base_url.rstrip("/").removesuffix("/v1") + "/api/embeddings"
+        try:
+            payload = _json.dumps({"model": self.embed_model, "prompt": "ping"}).encode("utf-8")
+            req = urllib.request.Request(
+                api_url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    passed = True
+                    note = f"embedding 模型 {self.embed_model} 可用"
+        except Exception as e:
+            note = f"embedding 模型 {self.embed_model} 不可用: {e}（请 ollama pull {self.embed_model}）"
+        return CheckItem(
+            name="embedding 模型",
+            required=1,
+            actual=1 if passed else 0,
+            unit="",
+            passed=passed,
+            note=note,
+        )
 
     def _get_available_ram_gb(self) -> float:
         """从 /proc/meminfo 读取可用内存（GB）"""

@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from galaxy_diag.config.defaults import AppConfig, LLMConfig, HardwareRequirement
+from galaxy_diag.config.defaults import AppConfig, LLMConfig, HardwareRequirement, KnowledgeConfig
 from galaxy_diag.config.model_profile import derive_hardware_requirement
 from galaxy_diag.shared.errors import ConfigError
 
@@ -31,6 +31,9 @@ _ENV_MAPPING: dict[str, tuple[str, str]] = {
     "GALAXY_HW_MIN_GPU_VRAM_GB": ("hardware", "min_gpu_vram_gb"),
     "GALAXY_HW_MIN_DISK_GB": ("hardware", "min_disk_gb"),
     "GALAXY_HW_GPU_REQUIRED": ("hardware", "gpu_required"),
+    "GALAXY_LLM_EMBED_MODEL": ("llm", "embed_model"),
+    "GALAXY_KB_TOP_K": ("knowledge", "top_k"),
+    "GALAXY_KB_MIN_SIMILARITY": ("knowledge", "min_similarity"),
 }
 
 def _parse_bool(value: str) -> bool:
@@ -48,6 +51,8 @@ _TYPE_COERCIONS: dict[tuple[str, str], type] = {
     ("hardware", "min_gpu_vram_gb"): float,
     ("hardware", "min_disk_gb"): float,
     ("hardware", "gpu_required"): _parse_bool,
+    ("knowledge", "top_k"): int,
+    ("knowledge", "min_similarity"): float,
 }
 
 
@@ -131,7 +136,10 @@ def load_config(config_path: str | None = None) -> AppConfig:
                 hw_kwargs[f.name] = getattr(derived_hw, f.name)  # 未配置走推导
         hw_config = HardwareRequirement(**hw_kwargs)
 
-        return AppConfig(llm=llm_config, hardware=hw_config)
+        kb_raw = raw.get("knowledge", {})
+        kb_config = KnowledgeConfig(**_filter_known_fields(kb_raw, KnowledgeConfig))
+
+        return AppConfig(llm=llm_config, hardware=hw_config, knowledge=kb_config)
     except TypeError as e:
         raise ConfigError(
             f"配置字段错误: {e}",

@@ -77,6 +77,38 @@ class ModelAdapter:
                 hint=self._call_error_hint(e),
             )
 
+    def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
+        """批量文本向量化（REQ-X-02，复用 timeout/max_retries/ModelCallError）
+
+        通过 Ollama 的 OpenAI 兼容 embeddings API 获取向量。
+
+        Args:
+            texts: 待向量化的文本列表
+            model: embedding 模型名；默认从 self.config.embed_model 读取
+
+        Returns:
+            向量列表，与 texts 等长、同序
+
+        Raises:
+            ModelCallError: embed_model 为空或调用失败
+        """
+        embed_model = model or self.config.embed_model
+        if not embed_model:
+            raise ModelCallError(
+                "embed_model 未配置，RAG 不可用",
+                hint="请在 config.yaml 的 llm.embed_model 配置 embedding 模型，并 ollama pull 该模型",
+            )
+        try:
+            resp = self.client.embeddings.create(model=embed_model, input=texts)
+            return [d.embedding for d in resp.data]
+        except ModelCallError:
+            raise
+        except Exception as e:
+            raise ModelCallError(
+                f"embedding 调用失败: {e}",
+                hint=f"请确认 Ollama 已启动且已 ollama pull {embed_model}",
+            )
+
     def chat_stream(self, messages: list[dict[str, str]], **kwargs) -> Iterator[str]:
         """流式调用，返回内容迭代器
 
