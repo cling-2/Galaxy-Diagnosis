@@ -17,6 +17,11 @@
 # 模型导入：
 #   遍历 deploy/offline/*.gguf，按文件名自动推导 Ollama 注册名并导入。
 #   放几个 gguf 就导入几个，名字与文件实际参数量一致，不硬编码。
+#
+# 服务日志：
+#   非 systemd 模式（如 Docker 容器）下，ollama serve 的 stderr 重定向到
+#   $SERVER_LOG_FILE（默认 /var/log/galaxy-diag/ollama.log），避免推理日志
+#   污染用户终端。systemd 模式下日志自动进入 journald（journalctl -u ollama）。
 
 set -euo pipefail
 
@@ -25,6 +30,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OFFLINE_DIR="$SCRIPT_DIR/offline"
 REQ_FILE="$PROJECT_DIR/requirements.txt"
 VENV_DIR="$PROJECT_DIR/venv"
+
+# 推理服务日志输出位置（非 systemd 模式下重定向 stderr，避免污染用户终端）。
+# systemd 模式下日志自动进入 journald，无需重定向。
+SERVER_LOG_DIR="${GALAXY_SERVER_LOG_DIR:-/var/log/galaxy-diag}"
+SERVER_LOG_FILE="$SERVER_LOG_DIR/ollama.log"
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -144,6 +154,9 @@ Environment="OLLAMA_HOST=127.0.0.1:11434"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_KEEP_ALIVE=30m"
 Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_LOG_LEVEL=ERROR"
+Environment="LLAMA_LOG_LEVEL=3"
+Environment="GIN_MODE=release"
 Restart=always
 RestartSec=3
 
@@ -164,7 +177,12 @@ SVCEOF
     else
         # 无 systemd（如 Docker 容器）：后台启动
         echo "    无 systemd，以后台进程方式启动 Ollama..."
-        OLLAMA_HOST=127.0.0.1:11434 /usr/local/bin/ollama serve &
+        mkdir -p "$SERVER_LOG_DIR"
+        OLLAMA_HOST=127.0.0.1:11434 \
+        OLLAMA_LOG_LEVEL=ERROR \
+        LLAMA_LOG_LEVEL=3 \
+        GIN_MODE=release \
+        /usr/local/bin/ollama serve >>"$SERVER_LOG_FILE" 2>&1 &
         OLLAMA_PID=$!
         sleep 2
         if kill -0 "$OLLAMA_PID" 2>/dev/null; then
@@ -180,11 +198,15 @@ fi
 # 确保 Ollama 服务正在运行（Docker 每次新容器进程不保留，需重新启动）
 if ! curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
     echo "    Ollama 服务未运行，正在启动..."
+    mkdir -p "$SERVER_LOG_DIR"
     OLLAMA_HOST=127.0.0.1:11434 \
     OLLAMA_FLASH_ATTENTION=1 \
     OLLAMA_KEEP_ALIVE=30m \
     OLLAMA_NUM_PARALLEL=1 \
-    /usr/local/bin/ollama serve &
+    OLLAMA_LOG_LEVEL=ERROR \
+    LLAMA_LOG_LEVEL=3 \
+    GIN_MODE=release \
+    /usr/local/bin/ollama serve >>"$SERVER_LOG_FILE" 2>&1 &
     OLLAMA_PID=$!
     sleep 2
     if kill -0 "$OLLAMA_PID" 2>/dev/null; then
@@ -313,6 +335,7 @@ echo ""
 echo "  Ollama:  $(ollama --version 2>&1 | head -1)"
 echo "  模型:    ${IMPORTED_NAMES[*]}"
 echo "  依赖:    $(python3 -c 'import openai, httpx, yaml, rich; print("OK")' 2>&1)"
+echo "  日志:    $SERVER_LOG_FILE (非 systemd 模式；systemd 下见 journalctl -u ollama)"
 echo ""
 echo "下一步："
 echo "  source venv/bin/activate"

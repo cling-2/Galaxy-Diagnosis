@@ -80,6 +80,80 @@ class TestPrecheckIntegration:
             _run_precheck(skip=False, config_path=None)
 
 
+class TestPrecheckGating:
+    """_needs_precheck 谓词：仅 run/diagnose（非 mock）触发预检"""
+
+    def _ns(self, **kw) -> "argparse.Namespace":
+        import argparse
+        return argparse.Namespace(**kw)
+
+    def test_run_needs_precheck(self):
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        assert _needs_precheck(self._ns(command="run")) is True
+
+    def test_diagnose_needs_precheck(self):
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        assert _needs_precheck(self._ns(command="diagnose")) is True
+
+    @pytest.mark.parametrize("cmd", ["env", "snapshot", "audit-log", "completion", "fix", "review"])
+    def test_non_llm_commands_skip_precheck(self, cmd):
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        assert _needs_precheck(self._ns(command=cmd)) is False
+
+    def test_mock_skips_precheck(self):
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        assert _needs_precheck(self._ns(command="run", mock=True)) is False
+
+    def test_no_command_skips_precheck(self):
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        assert _needs_precheck(self._ns(command=None)) is False
+
+    def test_skip_flag_orthogonal(self):
+        """_needs_precheck 与 --skip-precheck 正交：skip 在 _run_precheck 内处理"""
+        from galaxy_diag.workflow.cli.app import _needs_precheck
+        # run 即使带 skip_precheck 仍返回 True（gating 层不关心 skip）
+        assert _needs_precheck(self._ns(command="run", skip_precheck=True)) is True
+
+
+class TestPrecheckGatingIntegration:
+    """main() 分发时是否实际调用 HardwarePrechecker（端到端 gating 验证）"""
+
+    def test_non_llm_command_does_not_trigger_precheck(self):
+        """snapshot list 不调用 LLM，main() 不应触发 HardwarePrechecker"""
+        with patch("galaxy_diag.workflow.cli.app.HardwarePrechecker") as MockPrechecker, \
+             patch("galaxy_diag.safety.snapshot.list_snapshots", return_value=[]), \
+             patch("sys.argv", ["galaxy-diag", "snapshot", "list"]):
+            try:
+                from galaxy_diag.workflow.cli.app import main
+                main()
+            except SystemExit:
+                pass
+            MockPrechecker.assert_not_called()
+
+    def test_llm_command_triggers_precheck(self):
+        """diagnose 调用 LLM，main() 应触发 HardwarePrechecker
+
+        预检通过后进入 handle()；patch 掉 handle 避免真实采集/推理。
+        set_defaults(callback=handle) 在 _build_parser() 注册时绑定函数对象，
+        因此需在 main() 构建解析器前 patch 模块属性。
+        """
+        with patch("galaxy_diag.workflow.cli.cmd_diagnose.handle") as mock_handle, \
+             patch("galaxy_diag.workflow.cli.app.HardwarePrechecker") as MockPrechecker, \
+             patch("sys.argv", ["galaxy-diag", "diagnose", "-d", "x"]):
+            MockPrechecker.return_value.check.return_value = PrecheckResult(
+                passed=True,
+                items=[CheckItem(name="CPU 核数", required=4, actual=8, unit="核", passed=True)],
+                summary="✅ ok",
+            )
+            try:
+                from galaxy_diag.workflow.cli.app import main
+                main()
+            except SystemExit:
+                pass
+            assert MockPrechecker.called is True
+            assert mock_handle.called is True
+
+
 class TestPrintPrecheckResult:
     """print_precheck_result 渲染测试"""
 

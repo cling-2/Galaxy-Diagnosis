@@ -11,12 +11,30 @@ import importlib
 import os
 import sys
 
-# 抑制 Ollama 推理服务低级别日志输出到终端
-# 这些日志（如 "slot Ursine operator" "disabling mmap"）来自 Ollama 服务端进程，
+# 抑制本地推理服务（Ollama / llama.cpp llama-server）的低级别日志输出到终端。
+# Ollama 日志如 "slot ..." "disabling mmap"；llama-server 日志如
+# "srv server_strea:" "slot print_timing:" "[GIN] ... | 200 |"，来自服务端进程，
 # 与工具输出混在一起会干扰用户阅读。
-# 注意：此环境变量仅对新启动的 Ollama 进程生效；对已运行的服务需重启。
-if not os.environ.get("OLLAMA_LOG_LEVEL"):
-    os.environ["OLLAMA_LOG_LEVEL"] = "ERROR"
+#
+# 设置的环境变量（仅在用户未显式设置时填充默认值）：
+#   OLLAMA_LOG_LEVEL=ERROR  → Ollama 服务端日志级别
+#   LLAMA_LOG_LEVEL=3       → llama.cpp 日志级别（0=DEBUG 1=INFO 2=WARN 3=ERROR，新版）
+#   GIN_MODE=release        → llama-server 的 gin HTTP 框架访问日志（关闭 [GIN] 行）
+#
+# 约束：galaxy-diag 不启动推理服务（仅 HTTP API 连接），这些变量只对【设置后启动、
+# 且继承本进程环境的服务进程】生效。对已在运行的服务需重启并导出这些变量，
+# 或以 `2>logfile` 重定向 stderr（见 deploy/install_offline.sh）。
+def _apply_log_suppression_env() -> None:
+    """防御性设置推理服务日志抑制环境变量（不覆盖用户显式设置）。"""
+    if not os.environ.get("OLLAMA_LOG_LEVEL"):
+        os.environ["OLLAMA_LOG_LEVEL"] = "ERROR"
+    if not os.environ.get("LLAMA_LOG_LEVEL"):
+        os.environ["LLAMA_LOG_LEVEL"] = "3"
+    if not os.environ.get("GIN_MODE"):
+        os.environ["GIN_MODE"] = "release"
+
+
+_apply_log_suppression_env()
 
 from galaxy_diag.config.settings import load_config
 from galaxy_diag.model.precheck import HardwarePrechecker
@@ -35,6 +53,26 @@ _COMMANDS: list[tuple[str, str]] = [
     ("galaxy_diag.workflow.cli.cmd_run", "run"),
     ("galaxy_diag.workflow.cli.cmd_completion", "completion"),
 ]
+
+
+# 需要 LLM 推理（因而依赖硬件资源）的子命令集合。
+# 仅这些命令在分发前触发硬件预检；env/snapshot/audit-log/completion/fix/review
+# 不调用模型，跳过预检。新增需要预检的命令时在此追加命令名即可。
+_PRECHECK_REQUIRED_COMMANDS: frozenset[str] = frozenset({"run", "diagnose"})
+
+
+def _needs_precheck(args: argparse.Namespace) -> bool:
+    """是否需要执行硬件预检
+
+    仅当子命令在 _PRECHECK_REQUIRED_COMMANDS 中、且非 --mock 模式时返回 True。
+    --mock 模式使用预设响应、不连接真实 LLM，无需硬件资源预检。
+    """
+    if args.command not in _PRECHECK_REQUIRED_COMMANDS:
+        return False
+    # mock 属性仅 run 子命令定义；其余命令 getattr 回退为 False
+    if getattr(args, "mock", False):
+        return False
+    return True
 
 
 def _register_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -144,9 +182,10 @@ def main() -> None:
         console.print("")  # 尾部空行
         return
 
-    # 启动前硬件资源预检（子命令分发前执行；仅对实际运行的子命令触发，
-    # --help 等不走此分支）
-    _run_precheck(skip=args.skip_precheck, config_path=args.config)
+    # 启动前硬件预检：仅对调用 LLM 的子命令（run / diagnose）执行；
+    # --mock 模式同样跳过。env/snapshot/audit-log/completion/fix/review 不触发 LLM，无需预检。
+    if _needs_precheck(args):
+        _run_precheck(skip=args.skip_precheck, config_path=args.config)
 
     # 分发到子命令回调
     try:

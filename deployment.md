@@ -244,3 +244,5 @@ curl http://127.0.0.1:11434/v1/chat/completions \
 | zstd 未安装 | 解压 .tar.zst 需要 | `apt-get install zstd`（需离线准备或预装） |
 | python3-venv 未安装 | 创建虚拟环境需要 | `apt-get install python3-venv`（需离线准备或预装） |
 | 推理超时 | 纯 CPU 环境推理慢 | 正常现象，可增大 config.yaml 中 timeout 值 |
+| 推理时终端混入服务端日志（`[GIN]`、`slot print_timing:`、`srv server_strea:`） | llama-server/Ollama 与 galaxy-diag 共用同一终端，服务端 stderr 写入 TTY | galaxy-diag 无法控制已运行的服务进程；重启服务并重定向 stderr：`ollama serve >>/var/log/galaxy-diag/ollama.log 2>&1 &`（或 `2>/dev/null`）。非 systemd 部署的 `install_offline.sh` 已自动重定向；也可导出 `LLAMA_LOG_LEVEL=3`、`GIN_MODE=release`、`OLLAMA_LOG_LEVEL=ERROR` 后重启服务 |
+| 切换到 llama-server 后日志仍很多 | 旧版 llama.cpp 不识别 `LLAMA_LOG_LEVEL` | 旧版用启动参数 `--log-disable`，或直接 `2>logfile` 重定向 stderr |
