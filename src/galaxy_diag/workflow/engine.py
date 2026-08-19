@@ -375,7 +375,7 @@ class WorkflowEngine:
         # B类：已知故障模式跳过采集
         if self.state.should_skip_collecting:
             self._console.print("[dim]已知故障模式，跳过信息采集[/dim]")
-            self._transition(WorkflowStep.DIAGNOSING)
+            self._transition(WorkflowStep.PLANNING)
             return
 
         from galaxy_diag.diagnoser import build_diagnostic_context
