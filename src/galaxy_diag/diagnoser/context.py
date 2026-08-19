@@ -105,6 +105,46 @@ def extract_keywords(problem_description: str) -> list[str]:
     return tokens
 
 
+# ping 目标提取用的正则（模块级编译一次）
+# IPv4 + 主机名/域名（含端口的形式先去端口）
+import re as _re
+
+_IPV4_RE = _re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+# 主机名/域名：字母数字+连字符，含至少一个点，尾部非 . 的 TLD
+_HOSTNAME_RE = _re.compile(
+    r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b"
+)
+
+
+def extract_ping_targets(problem_description: str) -> list[str]:
+    """从问题描述中提取 IP / 主机名作为 ping 目标（供反幻觉校验）
+
+    仅提取 IPv4 地址与域名（含至少一个点 + 字母 TLD），排除纯数值、
+    排除版本号等噪声。这是反幻觉校验"网络连通性"的证据来源——
+    只有 ping 结果能证明真实连通性，iptables/CNI 配置只能证明"规则存在"。
+
+    Args:
+        problem_description: 用户问题描述
+
+    Returns:
+        去重后的 ping 目标列表
+    """
+    if not problem_description:
+        return []
+    targets: list[str] = []
+    seen: set[str] = set()
+    for m in _IPV4_RE.findall(problem_description):
+        # 过滤非法 IPv4 段（如 999.999）
+        if all(0 <= int(seg) <= 255 for seg in m.split(".")) and m not in seen:
+            seen.add(m)
+            targets.append(m)
+    for m in _HOSTNAME_RE.findall(problem_description):
+        if m not in seen:
+            seen.add(m)
+            targets.append(m)
+    return targets
+
+
 # ===== C类：按需精简硬件采集 =====
 
 # 需要硬件采集的关键词（命中任一即需要）
@@ -307,7 +347,14 @@ def build_raw_summary(ctx_fields: dict) -> dict:
     # 网络连通性
     net = ctx_fields.get("network_checks", [])
     if net:
-        lines = [f"- {n['target']}: reachable={n['reachable']} ({n.get('detail', '')[:100]})" for n in net]
+        lines = []
+        for n in net:
+            target = n.get('target', '?')
+            detail = (n.get('detail', '') or '')[:100]
+            if "reachable" in n:
+                lines.append(f"- {target}: reachable={n['reachable']} ({detail})")
+            else:
+                lines.append(f"- {target}: config_collected ({detail})")
         summary["network_checks"] = "\n".join(lines)
 
     # 用户上传日志
@@ -399,12 +446,15 @@ def build_diagnostic_context(
         collect_system_resources, warnings
     )
     if TOOL_NETWORK in new_tools:
+        # 从问题描述提取 IP/主机名作为 ping 目标，为反幻觉校验提供
+        # 真实连通性证据（ping 结果）。无目标时仅采路由/CNI/iptables。
+        ping_targets = extract_ping_targets(problem_description)
         network_checks = _safe_collect(
             collect_network_connectivity,
             warnings,
             env_type,
             container_runtime,
-            [],  # targets 留空，仅采集路由/CNI/iptables
+            ping_targets,
         )
 
     # 3. 被动接收：用户上传日志

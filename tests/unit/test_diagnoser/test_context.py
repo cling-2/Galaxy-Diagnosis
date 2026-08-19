@@ -14,6 +14,7 @@ from galaxy_diag.diagnoser.context import (
     TOOL_NETWORK,
     TOOL_RESOURCES,
     build_diagnostic_context,
+    extract_ping_targets,
     match_tools_by_keywords,
     preprocess_logs,
     should_collect_hardware,
@@ -325,3 +326,41 @@ class TestShouldCollectHardware:
         from galaxy_diag.diagnoser.context import should_collect_hardware
         # '键盘' doesn't match any NEEDED or NOT_NEEDED keyword → default True
         assert should_collect_hardware("键盘异常") is True
+
+
+class TestExtractPingTargets:
+    """从问题描述提取 IP/主机名作为 ping 目标"""
+
+    def test_ipv4_extracted(self):
+        assert extract_ping_targets("无法访问 10.0.1.100") == ["10.0.1.100"]
+
+    def test_multiple_ips(self):
+        result = extract_ping_targets("10.0.1.1 和 192.168.0.50 不通")
+        assert result == ["10.0.1.1", "192.168.0.50"]
+
+    def test_hostname_extracted(self):
+        result = extract_ping_targets("无法连接 api.example.com")
+        assert result == ["api.example.com"]
+
+    def test_ip_and_hostname_mixed(self):
+        result = extract_ping_targets("10.0.1.100 和 registry.k8s.io 都不通")
+        assert "10.0.1.100" in result
+        assert "registry.k8s.io" in result
+
+    def test_no_target_returns_empty(self):
+        assert extract_ping_targets("网络不通") == []
+        assert extract_ping_targets("") == []
+
+    def test_dedup(self):
+        result = extract_ping_targets("10.0.1.1 和 10.0.1.1 重复")
+        assert result == ["10.0.1.1"]
+
+    def test_invalid_ipv4_filtered(self):
+        """256.999.1.1 不是合法 IPv4"""
+        assert extract_ping_targets("256.999.1.1 不通") == []
+
+    def test_version_number_not_hostname(self):
+        """纯版本号如 Python3.10 不应被当作主机名"""
+        result = extract_ping_targets("Python3.10 环境")
+        # 3.10 不含 TLD，不应被提取
+        assert result == []

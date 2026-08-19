@@ -26,7 +26,11 @@ class HallucinationCheckResult:
 # ===== 事实校验规则 =====
 
 def _check_network_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None:
-    """网络问题校验：所有目标可达 → 矛盾
+    """网络问题校验：所有 ping 目标可达 → 矛盾
+
+    仅检查含 "reachable" 键的 ping 结果条目，忽略 "collected" 键的
+    iptables/CNI 配置条目（配置存在不代表网络可达）。
+    无 ping 结果时返回 None（无法判断）。
 
     Returns: True=矛盾, False=不矛盾, None=无数据无法判断
     """
@@ -38,8 +42,13 @@ def _check_network_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None:
     if not checks:
         return None  # 无网络采集数据，无法判断
 
-    # 所有目标可达 → 矛盾
-    all_reachable = all(c.get("reachable") for c in checks)
+    # 仅看 ping 结果（含 "reachable" 键），忽略配置采集结果（"collected" 键）
+    ping_results = [c for c in checks if "reachable" in c]
+    if not ping_results:
+        return None  # 无 ping 数据，无法判断
+
+    # 所有 ping 目标可达 → 矛盾
+    all_reachable = all(c.get("reachable") for c in ping_results)
     return all_reachable
 
 

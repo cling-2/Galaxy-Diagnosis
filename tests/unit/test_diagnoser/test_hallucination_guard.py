@@ -48,6 +48,36 @@ class TestCheckFacts:
         if result is not None:
             assert result.contradiction is False
 
+    def test_network_config_only_no_ping_returns_none(self):
+        """仅 iptables/docker-network 配置（无 ping 结果）→ None，不误报矛盾
+
+        回归：此前 iptables/CNI 条目用 reachable=True，会被误判为
+        "所有可达 → 矛盾"。修复后这些条目用 collected 键，被忽略。
+        """
+        ctx = _make_ctx(
+            problem_description="容器网络不通",
+            network_checks=[
+                {"target": "iptables", "collected": True, "detail": "-P INPUT ACCEPT"},
+                {"target": "docker-network", "collected": True, "detail": "bridge"},
+            ],
+        )
+        result = check_facts("容器网络不通", ctx)
+        # 无 ping 数据，无法判断 → 不应误报矛盾
+        assert result is None
+
+    def test_network_ping_reachable_with_config_present(self):
+        """ping 目标可达 + 配置条目同时存在 → 矛盾（只看 ping 结果）"""
+        ctx = _make_ctx(
+            problem_description="无法访问 10.0.1.100",
+            network_checks=[
+                {"target": "10.0.1.100", "reachable": True, "detail": "reachable"},
+                {"target": "iptables", "collected": True, "detail": "-P INPUT ACCEPT"},
+            ],
+        )
+        result = check_facts("无法访问 10.0.1.100 网络", ctx)
+        assert result is not None
+        assert result.contradiction is True
+
     def test_service_ok_when_all_running(self):
         """服务启动失败但所有服务运行中 → 矛盾"""
         ctx = _make_ctx(

@@ -535,28 +535,30 @@ def collect_network_connectivity(
         results.append({"target": target, "reachable": reachable, "detail": detail})
 
     # 路由/iptables（全环境通用）
+    # 注意：iptables/CNI 采集成功不代表网络可达，用 collected=True 标记
+    # 仅 ping 结果用 reachable 字段，供反幻觉校验区分
     iptables_result = _collect_iptables()
     if iptables_result:
-        results.append({"target": "iptables", "reachable": True, "detail": iptables_result})
+        results.append({"target": "iptables", "collected": True, "detail": iptables_result})
 
     # 容器环境额外采集
     if env_type == EnvironmentType.CONTAINER:
         if container_runtime == ContainerRuntime.KUBERNETES:
             cni = _collect_cni_config()
             if cni:
-                results.append({"target": "CNI", "reachable": True, "detail": cni})
+                results.append({"target": "CNI", "collected": True, "detail": cni})
         elif container_runtime == ContainerRuntime.DOCKER:
             net = _collect_docker_network()
             if net:
-                results.append({"target": "docker-network", "reachable": True, "detail": net})
+                results.append({"target": "docker-network", "collected": True, "detail": net})
         else:
             # UNKNOWN 双路
             cni = _collect_cni_config()
             if cni:
-                results.append({"target": "CNI", "reachable": True, "detail": cni})
+                results.append({"target": "CNI", "collected": True, "detail": cni})
             net = _collect_docker_network()
             if net:
-                results.append({"target": "docker-network", "reachable": True, "detail": net})
+                results.append({"target": "docker-network", "collected": True, "detail": net})
 
     return results
 

@@ -180,8 +180,15 @@ def format_diagnosis_context(ctx: DiagnosticContext, env_info: EnvInfo) -> str:
     if ctx.network_checks:
         parts.append("\n## 网络连通性")
         for check in ctx.network_checks:
-            reachable = "可达" if check.get("reachable") else "不可达"
-            parts.append(f"- {check.get('target', '?')}: {reachable} {check.get('detail', '')}")
+            target = check.get('target', '?')
+            detail = check.get('detail', '')
+            if "reachable" in check:
+                # ping 结果：可达/不可达
+                reachable = "可达" if check.get("reachable") else "不可达"
+                parts.append(f"- {target}: {reachable} {detail}")
+            else:
+                # 配置采集结果（iptables/CNI/路由）：仅标记已采集
+                parts.append(f"- {target}: 配置已采集 {detail}")
 
     # 7. 用户上传日志（不可信数据）
     if ctx.user_provided:
