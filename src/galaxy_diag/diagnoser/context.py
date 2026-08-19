@@ -109,7 +109,7 @@ def extract_keywords(problem_description: str) -> list[str]:
 
 # 需要硬件采集的关键词（命中任一即需要）
 _HARDWARE_NEEDED_KEYWORDS: tuple[str, ...] = (
-    "磁盘", "盘", "disk", "I/O", "io error", "smart", "raid",
+    "磁盘", "硬盘", "disk", "I/O", "io error", "smart", "raid",
     "固件", "firmware", "存储", "storage", "mount", "挂载",
     "利旧", "控制器", "数据盘", "lsblk", "fsck",
 )

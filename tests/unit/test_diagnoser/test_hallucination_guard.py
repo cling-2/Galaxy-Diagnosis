@@ -155,3 +155,34 @@ class TestCheckFacts:
         result = check_facts("网络不通", ctx)
         # 无网络采集数据，无法判断 → None
         assert result is None
+
+    def test_startup_slow_no_false_contradiction(self):
+        """收紧后 '启动' 单独不再匹配服务校验：'系统启动缓慢' + 全 running → None"""
+        ctx = _make_ctx(
+            problem_description="系统启动缓慢",
+            component_status=[
+                {"name": "galaxy-api", "status": "running", "detail": ""},
+            ],
+        )
+        result = check_facts("系统启动缓慢", ctx)
+        assert result is None
+
+    def test_failover_no_false_contradiction(self):
+        """收紧后 'fail' 单独不再匹配服务校验：'数据库failover异常' + 全 running → None"""
+        ctx = _make_ctx(
+            problem_description="数据库failover异常",
+            component_status=[
+                {"name": "galaxy-api", "status": "running", "detail": ""},
+            ],
+        )
+        result = check_facts("数据库failover异常", ctx)
+        assert result is None
+
+    def test_resource_missing_keys_returns_none(self):
+        """_check_resource_ok: 非空 resources 但缺少 mem_used_percent/oom_count → None"""
+        ctx = _make_ctx(
+            problem_description="OOM 内存不足",
+            system_resources={"cpu_load": "5.2"},  # missing mem_used_percent & oom_count
+        )
+        result = check_facts("OOM 内存不足", ctx)
+        assert result is None

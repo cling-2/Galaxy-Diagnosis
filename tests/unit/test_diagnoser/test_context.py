@@ -309,3 +309,19 @@ class TestShouldCollectHardware:
     def test_lsblk_needs_hardware(self):
         from galaxy_diag.diagnoser.context import should_collect_hardware
         assert should_collect_hardware("lsblk 只显示系统盘") is True
+
+    def test_hdd_keyword_needs_hardware(self):
+        """'硬盘' 命中 NEEDED 关键词 → True"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("硬盘故障") is True
+
+    def test_broad_pan_no_longer_false_positive(self):
+        """收紧后 '盘' 不再匹配：'系统盘点异常' 不命中 NEEDED 也不命中 NOT_NEEDED → 默认 True（保守）"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        assert should_collect_hardware("系统盘点异常") is True
+
+    def test_jianpan_no_longer_false_positive(self):
+        """收紧后 '盘' 不再匹配：'键盘异常' 不命中 NEEDED 也不命中 NOT_NEEDED → 默认 True（保守）"""
+        from galaxy_diag.diagnoser.context import should_collect_hardware
+        # '键盘' doesn't match any NEEDED or NOT_NEEDED keyword → default True
+        assert should_collect_hardware("键盘异常") is True

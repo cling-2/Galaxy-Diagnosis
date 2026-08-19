@@ -45,7 +45,7 @@ def _check_network_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None:
 
 def _check_service_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None:
     """服务问题校验：所有组件非 failed → 矛盾"""
-    keywords = ("服务", "启动失败", "service", "fail", "启动")
+    keywords = ("服务", "启动失败", "service")
     if not any(kw in problem_desc.lower() for kw in keywords):
         return None
 
@@ -80,6 +80,9 @@ def _check_resource_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None
 
     resources = ctx.system_resources
     if not resources:
+        return None
+
+    if "mem_used_percent" not in resources or "oom_count" not in resources:
         return None
 
     try:

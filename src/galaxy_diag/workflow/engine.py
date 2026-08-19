@@ -349,7 +349,7 @@ class WorkflowEngine:
             self._console.print("[dim]已跳过完整硬件采集（问题类型不需要）[/dim]")
 
         # B类：规则预匹配，CONFIRMED 则跳过 COLLECTING + DIAGNOSING
-        if env_info:
+        if env_info is not None:
             pre_diagnosis = prematch_rules_by_description(
                 self.state.problem_description,
                 env_info.env_type,
