@@ -82,8 +82,11 @@ def _check_resource_ok(problem_desc: str, ctx: DiagnosticContext) -> bool | None
     if not resources:
         return None
 
-    oom_count = int(resources.get("oom_count", "0"))
-    mem_pct = float(resources.get("mem_used_percent", "0"))
+    try:
+        oom_count = int(resources.get("oom_count", "0"))
+        mem_pct = float(resources.get("mem_used_percent", "0"))
+    except (ValueError, TypeError):
+        return None  # 非数值字符串无法判断
 
     # 无 OOM 且内存使用率 < 90% → 矛盾
     no_oom = oom_count == 0
@@ -122,8 +125,9 @@ def check_facts(
 ) -> HallucinationCheckResult | None:
     """事实校验：对比用户描述与采集数据，检测矛盾
 
-    按规则表依次校验，首个矛盾即返回（短路）。
-    无匹配规则或无不矛盾 → 返回 None。
+    优先发现矛盾：扫描全部规则，任意规则返回 True（矛盾）即立即返回（短路）。
+    无任何矛盾时，返回首个非 None 的 False 结果（供日志记录）。
+    全部规则返回 None → 返回 None。
 
     Args:
         problem_description: 用户问题描述
@@ -132,23 +136,23 @@ def check_facts(
     Returns:
         矛盾时返回 HallucinationCheckResult，不矛盾或无匹配返回 None
     """
+    first_non_contradiction: HallucinationCheckResult | None = None
     for rule_id, check_fn, message in _FACT_CHECK_RULES:
         result = check_fn(problem_description, ctx)
         if result is None:
             continue  # 无数据/不涉及，跳过
         if result:
-            # 矛盾
+            # 矛盾 — 立即返回（短路优先返回矛盾）
             return HallucinationCheckResult(
                 rule_id=rule_id,
                 contradiction=True,
                 message=message,
             )
-        else:
-            # 不矛盾，但仍返回结果（供日志记录）
-            return HallucinationCheckResult(
+        # 不矛盾 — 记住首个非矛盾结果（供日志返回），继续扫描后续规则
+        if first_non_contradiction is None:
+            first_non_contradiction = HallucinationCheckResult(
                 rule_id=rule_id,
                 contradiction=False,
                 message="",
             )
-
-    return None
+    return first_non_contradiction

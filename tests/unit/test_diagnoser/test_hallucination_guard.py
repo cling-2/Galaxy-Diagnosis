@@ -1,7 +1,5 @@
 """反幻觉事实校验测试"""
 
-import pytest
-
 from galaxy_diag.diagnoser.hallucination_guard import check_facts, HallucinationCheckResult
 from galaxy_diag.shared.types import DiagnosticContext, LogSnippet
 
@@ -128,10 +126,32 @@ class TestCheckFacts:
         result = check_facts("磁盘 I/O error", ctx)
         assert result is None
 
-    def test_empty_network_checks_treated_as_ok(self):
-        """网络问题但无网络检测结果 → 不矛盾（无法证明）"""
+    def test_short_circuit_prioritizes_later_contradiction(self):
+        """前置规则不矛盾、后置规则矛盾 → 优先返回矛盾（短路优先级）
+
+        场景：用户描述同时含网络与服务关键词；网络有不可达目标（不矛盾），
+        但所有服务运行正常（矛盾）。旧逻辑会在网络规则返回 False 时短路返回，
+        漏掉后续服务规则的矛盾 —— 反幻觉护栏绝不可漏报矛盾。
+        """
+        ctx = _make_ctx(
+            problem_description="服务启动失败且网络不通",
+            network_checks=[
+                {"target": "10.0.1.100", "reachable": False, "detail": "unreachable"},
+            ],
+            component_status=[
+                {"name": "galaxy-api", "status": "running", "detail": ""},
+                {"name": "galaxy-scheduler", "status": "running", "detail": ""},
+            ],
+        )
+        result = check_facts("服务启动失败且网络不通", ctx)
+        assert result is not None
+        assert result.contradiction is True
+        assert result.rule_id == "service_ok"
+        assert "服务" in result.message
+
+    def test_empty_network_checks_returns_none(self):
+        """网络问题但无网络检测结果 → None（无法判断，非不矛盾）"""
         ctx = _make_ctx(problem_description="网络不通")
         result = check_facts("网络不通", ctx)
-        # 无网络采集数据，无法证明矛盾
-        if result is not None:
-            assert result.contradiction is False
+        # 无网络采集数据，无法判断 → None
+        assert result is None
