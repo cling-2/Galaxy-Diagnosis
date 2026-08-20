@@ -50,6 +50,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("galaxy_diag.workflow.cli.cmd_review", "review"),
     ("galaxy_diag.workflow.cli.cmd_snapshot", "snapshot"),
     ("galaxy_diag.workflow.cli.cmd_audit_log", "audit-log"),
+    ("galaxy_diag.workflow.cli.cmd_trace", "trace"),
     ("galaxy_diag.workflow.cli.cmd_run", "run"),
     ("galaxy_diag.workflow.cli.cmd_completion", "completion"),
     ("galaxy_diag.workflow.cli.cmd_kb", "kb"),

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -61,6 +62,15 @@ class ModelAdapter:
         Raises:
             ModelCallError: 模型调用失败
         """
+        # Trace 拦截：通过 contextvar 获取 recorder（REQ-X-04）
+        from galaxy_diag.trace.recorder import (
+            build_prompt_summary,
+            get_recorder,
+            truncate_completion,
+        )
+        recorder = get_recorder()
+        start = time.monotonic() if recorder else 0.0
+
         try:
             # 调用方未显式指定 max_tokens 时，使用配置默认值（防止无限生成，加速推理）
             if "max_tokens" not in kwargs and self.config.max_tokens > 0:
@@ -70,8 +80,42 @@ class ModelAdapter:
                 messages=messages,
                 **kwargs,
             )
-            return response.choices[0].message.content or ""
+            content = response.choices[0].message.content or ""
+
+            # 记录 LLMCall Event（completion + prompt 摘要）
+            if recorder:
+                truncated_content, was_truncated = truncate_completion(content)
+                # usage 信息（部分后端不返回）
+                usage = {}
+                if getattr(response, "usage", None):
+                    usage = {
+                        "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                    }
+                recorder.record_event(
+                    "LLMCall",
+                    model=self.config.model,
+                    prompt_summary=build_prompt_summary(messages),
+                    completion=truncated_content,
+                    truncated=was_truncated,
+                    usage=usage,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    status="success",
+                    # parsed_result / parse_ok 由调用方 parse 后回填（update_last_events）
+                    parse_ok=None,
+                )
+
+            return content
         except Exception as e:
+            if recorder:
+                recorder.record_event(
+                    "LLMCall",
+                    model=self.config.model,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    status="error",
+                    error=str(e)[:200],
+                    parse_ok=False,
+                )
             raise ModelCallError(
                 f"模型调用失败: {e}",
                 hint=self._call_error_hint(e),
@@ -160,6 +204,14 @@ class ModelAdapter:
         Raises:
             ModelCallError: 模型调用失败
         """
+        from galaxy_diag.trace.recorder import (
+            build_prompt_summary,
+            get_recorder,
+            truncate_completion,
+        )
+        recorder = get_recorder()
+        start = time.monotonic() if recorder else 0.0
+
         try:
             if "max_tokens" not in kwargs and self.config.max_tokens > 0:
                 kwargs["max_tokens"] = self.config.max_tokens
@@ -182,6 +234,29 @@ class ModelAdapter:
                         arguments=tc.function.arguments,
                     ))
 
+            # 记录 LLMCall Event
+            if recorder:
+                content = message.content or ""
+                truncated_content, was_truncated = truncate_completion(content)
+                usage = {}
+                if getattr(response, "usage", None):
+                    usage = {
+                        "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                    }
+                recorder.record_event(
+                    "LLMCall",
+                    model=self.config.model,
+                    prompt_summary=build_prompt_summary(messages),
+                    completion=truncated_content,
+                    truncated=was_truncated,
+                    usage=usage,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    status="success",
+                    parse_ok=None,
+                    tool_calls_count=len(tool_calls),
+                )
+
             return ChatResponse(
                 content=message.content or "",
                 tool_calls=tool_calls,
@@ -189,6 +264,15 @@ class ModelAdapter:
                 raw=response,
             )
         except Exception as e:
+            if recorder:
+                recorder.record_event(
+                    "LLMCall",
+                    model=self.config.model,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    status="error",
+                    error=str(e)[:200],
+                    parse_ok=False,
+                )
             raise ModelCallError(
                 f"模型工具调用失败: {e}",
                 hint=self._call_error_hint(e),

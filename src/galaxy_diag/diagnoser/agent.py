@@ -68,7 +68,26 @@ def diagnose(
     #    仅 CONFIRMED 短路直接返回（高确定性根因，无需 LLM）；
     #    SUSPECTED 命中不短路，作为提示种子（rule_hint）注入 LLM 深化：
     #    LLM 据此充实证据、细化排查步骤、修正故障范围（可能确认/修正/降级）。
+    from galaxy_diag.diagnoser.rules import DIAGNOSIS_RULES
+    from galaxy_diag.trace.recorder import get_recorder
+
     rule_result = match_rules(diagnostic_context)
+
+    # 记录 RuleMatch Event（REQ-X-04）
+    _recorder = get_recorder()
+    if _recorder:
+        _recorder.record_event(
+            "RuleMatch",
+            rules_count=len(DIAGNOSIS_RULES),
+            matched_rule_id=getattr(rule_result, "root_cause", None)[:80] if rule_result else None,
+            matched_keywords=[],
+            result="CONFIRMED" if (rule_result and rule_result.confidence.value == "confirmed")
+                  else ("SUSPECTED" if rule_result else "NONE"),
+            rule_hint=str(rule_result.root_cause)[:200] if (rule_result and rule_result.confidence.value == "suspected") else None,
+            diagnosis_source="RULE_MATCH" if (rule_result and rule_result.confidence.value == "confirmed") else "LLM",
+            status="success",
+        )
+
     if rule_result is not None and rule_result.confidence.value == "confirmed":
         rule_result.diagnosis_source = DiagnosisSource.RULE_MATCH
         return rule_result
@@ -93,12 +112,44 @@ def diagnose(
             diagnostic_context, env_info, model_adapter, kb_store, knowledge_config
         )
 
+        # 记录 RAGRetrieval Event（REQ-X-04）
+        if _recorder and retrieval_result:
+            _recorder.record_event(
+                "RAGRetrieval",
+                query_text=retrieval_result.query,
+                matches=[
+                    {
+                        "case_id": case.case_id,
+                        "similarity": sim,
+                        "summary": case.content[:80],
+                        "env_type": str(case.env_type.value) if case.env_type else None,
+                    }
+                    for case, sim in retrieval_result.matches
+                ],
+                top_k=knowledge_config.top_k,
+                min_similarity=knowledge_config.min_similarity,
+                best_similarity=max((sim for _, sim in retrieval_result.matches), default=0.0),
+                status="success" if retrieval_result.matches else "empty",
+            )
+
     try:
         messages = build_diagnosis_messages(
             problem_description, env_info, diagnostic_context, retrieval_result, rule_hint
         )
         raw_response = model_adapter.chat(messages)
         result = parse_diagnosis_response(raw_response, env_type)
+
+        # Trace 回填：parsed_result / parse_ok 到最近一条 LLMCall Event
+        if _recorder:
+            _recorder.update_last_events(
+                "LLMCall",
+                parsed_result={
+                    "root_cause": result.root_cause[:200] if result.root_cause else "",
+                    "confidence": str(result.confidence.value),
+                    "diagnosis_source": str(result.diagnosis_source),
+                },
+                parse_ok=True,
+            )
 
         # 来源标注：填充引用的客户案例
         if retrieval_result and retrieval_result.matches:
@@ -113,6 +164,8 @@ def diagnose(
         return result
     except DiagnoseError:
         # JSON 解析失败：重试 1 次
+        if _recorder:
+            _recorder.update_last_events("LLMCall", parse_ok=False)
         pass
     except ModelCallError:
         # LLM 调用失败：明确提示，降级兜底
@@ -126,6 +179,18 @@ def diagnose(
         ]
         raw_response_retry = model_adapter.chat(retry_messages)
         result = parse_diagnosis_response(raw_response_retry, env_type)
+
+        # Trace 回填：重试 LLMCall 的 parsed_result
+        if _recorder:
+            _recorder.update_last_events(
+                "LLMCall",
+                parsed_result={
+                    "root_cause": result.root_cause[:200] if result.root_cause else "",
+                    "confidence": str(result.confidence.value),
+                    "diagnosis_source": str(result.diagnosis_source),
+                },
+                parse_ok=True,
+            )
 
         # 来源标注：填充引用的客户案例（重试路径同样填充）
         if retrieval_result and retrieval_result.matches:
@@ -141,4 +206,6 @@ def diagnose(
         return build_error_fallback(env_type, "LLM 推理服务不可用，无法完成根因分析")
     except DiagnoseError:
         # 重试仍格式异常：模型可用但未遵循格式要求
+        if _recorder:
+            _recorder.update_last_events("LLMCall", parse_ok=False)
         return build_format_fallback(env_type, "LLM 推理输出格式异常，无法解析")

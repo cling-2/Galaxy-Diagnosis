@@ -133,11 +133,26 @@ def generate(
     suggestion: FixSuggestion | None = None
     raw_response: str = ""
 
+    from galaxy_diag.trace.recorder import get_recorder
+    _recorder = get_recorder()
+
     try:
         raw_response = model_adapter.chat(messages)
         suggestion = parse_fix_response(raw_response)
+        if _recorder:
+            _recorder.update_last_events(
+                "LLMCall",
+                parsed_result={
+                    "steps_count": len(suggestion.steps) if suggestion else 0,
+                    "script_language": str(suggestion.script_language) if suggestion else "",
+                    "source": str(suggestion.source) if suggestion else "",
+                },
+                parse_ok=True,
+            )
     except FixerError:
         # JSON 解析失败：重试 1 次（追加 JSON 格式提示）
+        if _recorder:
+            _recorder.update_last_events("LLMCall", parse_ok=False)
         pass
     except ModelCallError:
         # LLM 调用失败：降级兜底
@@ -152,9 +167,21 @@ def generate(
             ]
             raw_response_retry = model_adapter.chat(retry_messages)
             suggestion = parse_fix_response(raw_response_retry)
+            if _recorder:
+                _recorder.update_last_events(
+                    "LLMCall",
+                    parsed_result={
+                        "steps_count": len(suggestion.steps) if suggestion else 0,
+                        "script_language": str(suggestion.script_language) if suggestion else "",
+                        "source": str(suggestion.source) if suggestion else "",
+                    },
+                    parse_ok=True,
+                )
         except ModelCallError:
             suggestion = build_error_fallback("LLM 推理服务不可用，无法生成修复建议")
         except FixerError:
+            if _recorder:
+                _recorder.update_last_events("LLMCall", parse_ok=False)
             suggestion = build_format_fallback("LLM 输出格式异常，无法生成修复建议")
 
     # 确保至少含一个验证步骤（LLM 漏生成时补兜底，仅在有步骤时生效）

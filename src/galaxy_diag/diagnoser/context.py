@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from galaxy_diag.diagnoser.tools import (
@@ -254,16 +255,75 @@ def _safe_collect(
 
     单项失败返回空值 + warning，不阻断其他 Tool。
     返回值类型与 fn 一致（失败时返回 fn 的"空"形态）。
+
+    Trace 拦截：通过 contextvar 获取 recorder 记录 ToolCall Event（REQ-X-04）。
+    output_summary 初始记录 repr 摘要，完整 build_raw_summary 摘要由 build_diagnostic_context 末尾回填。
     """
     fn_name = getattr(fn, "__name__", str(fn))
+
+    # Trace 拦截
+    from galaxy_diag.trace.recorder import get_recorder, truncate_output_summary
+    recorder = get_recorder()
+    start = 0.0
+    if recorder:
+        start = time.monotonic()
+
     try:
-        return fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
+        # 记录成功的 ToolCall Event
+        if recorder:
+            try:
+                size_bytes = len(repr(result).encode("utf-8", errors="replace"))
+            except Exception:
+                size_bytes = 0
+            # input_params：从 args/kwargs 提取（排除 warnings list 等非业务参数）
+            # args[0] 在此处是 fn 自身已绑定，实际业务参数从 *args 传来的；
+            # _safe_collect 的调用约定是 _safe_collect(fn, warnings, *args)，此处 args 即业务参数
+            input_params = {}
+            for i, a in enumerate(args):
+                input_params[f"arg{i}"] = _safe_repr_param(a)
+            for k, v in kwargs.items():
+                input_params[k] = _safe_repr_param(v)
+            recorder.record_event(
+                "ToolCall",
+                tool_name=fn_name,
+                input_params=input_params,
+                output_summary=truncate_output_summary(result),
+                output_size_bytes=size_bytes,
+                output_status="success",
+                duration_ms=int((time.monotonic() - start) * 1000),
+                status="success",
+            )
+        return result
     except CollectorError as e:
         warnings.append(f"{fn_name} 采集失败: {e.message}")
         if e.hint:
             warnings.append(f"  💡 {e.hint}")
+        # 记录失败的 ToolCall Event
+        if recorder:
+            recorder.record_event(
+                "ToolCall",
+                tool_name=fn_name,
+                output_summary="",
+                output_size_bytes=0,
+                output_status="partial_failure",
+                duration_ms=int((time.monotonic() - start) * 1000),
+                status="error",
+                error=e.message[:200],
+            )
         # 返回对应空形态
         return _empty_result_for_name(fn_name)
+
+
+def _safe_repr_param(obj, max_len: int = 80) -> str:
+    """安全 repr 工具参数，截断长内容"""
+    try:
+        s = repr(obj)
+    except Exception:
+        s = "<unrepresentable>"
+    if len(s) > max_len:
+        s = s[:max_len] + "..."
+    return s
 
 
 def _empty_result_for_name(name: str):
@@ -517,5 +577,18 @@ def build_diagnostic_context(
         "network_checks": ctx.network_checks,
         "user_provided": ctx.user_provided,
     })
+
+    # 9. Trace 回填：将完整 raw_output 摘要补到最近一条 ToolCall Event
+    #    （Agent 实际消费的 LLM 输入上下文，供推理链路可观测）
+    try:
+        from galaxy_diag.trace.recorder import get_recorder
+        recorder = get_recorder()
+        if recorder:
+            raw_summary_text = "\n\n".join(
+                f"[{k}]\n{v}" for k, v in ctx.raw_output.items()
+            )
+            recorder.update_last_events("ToolCall", output_summary=raw_summary_text)
+    except Exception:
+        pass
 
     return ctx

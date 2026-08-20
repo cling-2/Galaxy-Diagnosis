@@ -154,6 +154,11 @@ class WorkflowEngine:
         self._last_user_step_num = 0  # 上一次打印的用户可见步骤编号（避免重复打印步骤标题）
         self._fix_retry_feedback: list[str] | None = None  # D-03 CRITICAL 失败反馈（回退 PLANNING 时回灌）
 
+        # Trace 状态（REQ-X-04）
+        self._span_seq: dict[str, int] = {}  # step → 已进入次数（用于 sequence_index）
+        self._recorder = None  # TraceRecorder，在 run() 中创建
+        self._recorder_token = None  # contextvar token
+
         # 初始化 ModelAdapter（延迟导入避免循环依赖）
         from galaxy_diag.config.settings import load_config
 
@@ -178,51 +183,62 @@ class WorkflowEngine:
         主循环：读取 current_step → 执行步骤 → 转换状态 → 持久化 → 重复。
         可被 Ctrl+C 中断，状态已落盘，下次 resume 继续。
         """
-        while self.state.session_status == SessionStatus.ACTIVE:
-            step = self.state.current_step
-            self._print_step_header(step)
+        # 初始化 Trace（REQ-X-04）
+        self._start_trace()
 
-            try:
-                if step == WorkflowStep.ENV_RECOGNISING:
-                    self._do_env_recognising()
-                elif step == WorkflowStep.COLLECTING:
-                    self._do_collecting()
-                elif step == WorkflowStep.DIAGNOSING:
-                    self._do_diagnosing()
-                elif step == WorkflowStep.PLANNING:
-                    self._do_planning()
-                elif step == WorkflowStep.SECURITY_CHECKING:
-                    self._do_security_checking()
-                elif step == WorkflowStep.EXECUTION_GUARD:
-                    self._do_execution_guard()
-                elif step == WorkflowStep.REVIEWING:
-                    self._do_reviewing()
-                elif step == WorkflowStep.SNAPSHOT:
-                    self._do_snapshot()
-                elif step == WorkflowStep.EXECUTING:
-                    self._do_executing()
-                elif step == WorkflowStep.VERIFYING:
-                    self._do_verifying()
-                else:
-                    raise WorkflowError(f"未知步骤: {step.value}")
-            except KeyboardInterrupt:
-                # Ctrl+C: 状态已落盘，提示 resume
-                self._console.print("\n[dim]已中断，状态已保存。使用 galaxy-diag run --resume 恢复[/dim]")
-                return
-            except ModelUnavailableError as e:
-                # LLM 不可用：保存状态，提示恢复服务后 resume
-                self._console.print(f"\n[danger]✗ 推理服务不可用: {e.message}[/danger]")
-                if e.hint:
-                    self._console.print(f"  💡 {e.hint}")
-                self._console.print("[dim]  请恢复推理服务后使用 galaxy-diag run --resume 恢复[/dim]")
-                return
-            except GalaxyDiagError as e:
-                # 业务错误：展示错误，保存状态
-                self._console.print(f"\n[danger]✗ {e.message}[/danger]")
-                if e.hint:
-                    self._console.print(f"  💡 {e.hint}")
-                self._save()
-                return
+        try:
+            while self.state.session_status == SessionStatus.ACTIVE:
+                step = self.state.current_step
+                self._print_step_header(step)
+
+                try:
+                    if step == WorkflowStep.ENV_RECOGNISING:
+                        self._do_env_recognising()
+                    elif step == WorkflowStep.COLLECTING:
+                        self._do_collecting()
+                    elif step == WorkflowStep.DIAGNOSING:
+                        self._do_diagnosing()
+                    elif step == WorkflowStep.PLANNING:
+                        self._do_planning()
+                    elif step == WorkflowStep.SECURITY_CHECKING:
+                        self._do_security_checking()
+                    elif step == WorkflowStep.EXECUTION_GUARD:
+                        self._do_execution_guard()
+                    elif step == WorkflowStep.REVIEWING:
+                        self._do_reviewing()
+                    elif step == WorkflowStep.SNAPSHOT:
+                        self._do_snapshot()
+                    elif step == WorkflowStep.EXECUTING:
+                        self._do_executing()
+                    elif step == WorkflowStep.VERIFYING:
+                        self._do_verifying()
+                    else:
+                        raise WorkflowError(f"未知步骤: {step.value}")
+                except KeyboardInterrupt:
+                    # Ctrl+C: 状态已落盘，提示 resume
+                    self._console.print("\n[dim]已中断，状态已保存。使用 galaxy-diag run --resume 恢复[/dim]")
+                    self._stop_trace("interrupted")
+                    return
+                except ModelUnavailableError as e:
+                    # LLM 不可用：保存状态，提示恢复服务后 resume
+                    self._console.print(f"\n[danger]✗ 推理服务不可用: {e.message}[/danger]")
+                    if e.hint:
+                        self._console.print(f"  💡 {e.hint}")
+                    self._console.print("[dim]  请恢复推理服务后使用 galaxy-diag run --resume 恢复[/dim]")
+                    self._stop_trace("interrupted")
+                    return
+                except GalaxyDiagError as e:
+                    # 业务错误：展示错误，保存状态
+                    self._console.print(f"\n[danger]✗ {e.message}[/danger]")
+                    if e.hint:
+                        self._console.print(f"  💡 {e.hint}")
+                    self._save()
+                    self._stop_trace("interrupted")
+                    return
+        finally:
+            # 确保终态时关闭 trace
+            self._stop_trace(self._derive_final_status())
+
 
     @classmethod
     def start_new(
@@ -335,33 +351,48 @@ class WorkflowEngine:
         C类：根据问题类型决定是否跳过完整硬件采集。
         """
         from galaxy_diag.diagnoser.context import should_collect_hardware
-        from galaxy_diag.diagnoser.rules import prematch_rules_by_description
+        from galaxy_diag.diagnoser.rules import (
+            DIAGNOSIS_RULES,
+            prematch_rules_by_description,
+        )
 
-        # C类：判断是否跳过完整硬件采集
-        skip_hw = not should_collect_hardware(self.state.problem_description)
-        self.state.should_skip_hardware = skip_hw
+        with self._span(WorkflowStep.ENV_RECOGNISING):
+            # C类：判断是否跳过完整硬件采集
+            skip_hw = not should_collect_hardware(self.state.problem_description)
+            self.state.should_skip_hardware = skip_hw
 
-        env_info = collect_env(skip_hardware=skip_hw)
+            env_info = collect_env(skip_hardware=skip_hw)
 
-        self.state.env_info = env_info
-        display.print_env_info(env_info, skip_hardware=skip_hw)
+            self.state.env_info = env_info
+            display.print_env_info(env_info, skip_hardware=skip_hw)
 
-        # B类：规则预匹配，CONFIRMED 则跳过 COLLECTING + DIAGNOSING
-        if env_info is not None:
-            pre_diagnosis = prematch_rules_by_description(
-                self.state.problem_description,
-                env_info.env_type,
-            )
-            if pre_diagnosis is not None:
-                self.state.diagnosis = pre_diagnosis
-                self.state.should_skip_collecting = True
-                display.print_diagnosis(pre_diagnosis)
-                self._console.print("[dim]已知故障模式，跳过信息采集和深度诊断[/dim]")
-                self._save()
-                self._transition(WorkflowStep.PLANNING)
-                return
+            # B类：规则预匹配，CONFIRMED 则跳过 COLLECTING + DIAGNOSING
+            if env_info is not None:
+                pre_diagnosis = prematch_rules_by_description(
+                    self.state.problem_description,
+                    env_info.env_type,
+                )
+                # 记录 RuleMatch Event（prematch）
+                self._record_event(
+                    "RuleMatch",
+                    rules_count=len(DIAGNOSIS_RULES),
+                    matched_rule_id=pre_diagnosis.root_cause[:80] if pre_diagnosis else None,
+                    matched_keywords=[],
+                    result="CONFIRMED" if pre_diagnosis else "NONE",
+                    rule_hint=None,
+                    diagnosis_source="RULE_MATCH" if pre_diagnosis else "LLM",
+                    status="success",
+                )
+                if pre_diagnosis is not None:
+                    self.state.diagnosis = pre_diagnosis
+                    self.state.should_skip_collecting = True
+                    display.print_diagnosis(pre_diagnosis)
+                    self._console.print("[dim]已知故障模式，跳过信息采集和深度诊断[/dim]")
+                    self._save()
+                    self._transition(WorkflowStep.PLANNING)
+                    return
 
-        self._transition(WorkflowStep.COLLECTING)
+            self._transition(WorkflowStep.COLLECTING)
 
     def _do_collecting(self) -> None:
         """COLLECTING: 诊断信息采集
@@ -373,11 +404,13 @@ class WorkflowEngine:
         # B类：已知故障模式跳过采集
         if self.state.should_skip_collecting:
             self._console.print("[dim]已知故障模式，跳过信息采集[/dim]")
+            with self._span(WorkflowStep.COLLECTING, skip_reason="prematch_confirmed"):
+                pass
             self._transition(WorkflowStep.PLANNING)
             return
 
         from galaxy_diag.diagnoser import build_diagnostic_context
-        from galaxy_diag.diagnoser.rules import match_rules
+        from galaxy_diag.diagnoser.rules import DIAGNOSIS_RULES, match_rules
 
         if not self.state.env_info:
             raise WorkflowError(
@@ -385,60 +418,90 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        self._console.print("[info]采集诊断信息...[/info]")
-        ctx = build_diagnostic_context(
-            problem_description=self.state.problem_description,
-            env_info=self.state.env_info,
-            user_log_files=self._user_log_files,
-            existing_context=self.state.diagnostic_context,  # 增量采集
-        )
+        with self._span(WorkflowStep.COLLECTING):
+            self._console.print("[info]采集诊断信息...[/info]")
+            ctx = build_diagnostic_context(
+                problem_description=self.state.problem_description,
+                env_info=self.state.env_info,
+                user_log_files=self._user_log_files,
+                existing_context=self.state.diagnostic_context,  # 增量采集
+            )
 
-        self.state.diagnostic_context = ctx
-        display.print_diagnostic_context(ctx)
-        self._save()
-
-        # 反幻觉：事实校验（采集后、诊断前）
-        from galaxy_diag.diagnoser.hallucination_guard import check_facts
-
-        hallucination_result = check_facts(
-            self.state.problem_description, ctx,
-        )
-        if hallucination_result is not None:
-            self.state.hallucination_check_result = hallucination_result.rule_id
+            self.state.diagnostic_context = ctx
+            display.print_diagnostic_context(ctx)
             self._save()
 
-            if hallucination_result.contradiction:
-                self._console.print(
-                    f"\n[warning]⚠ 反幻觉校验: {hallucination_result.message}[/warning]"
-                )
-                # 写审计日志
-                self._write_audit(result="failure", user_input="")
-                self._mark_done(f"反幻觉拦截: {hallucination_result.message}")
-                return
+            # 反幻觉：事实校验（采集后、诊断前）
+            from galaxy_diag.diagnoser.hallucination_guard import check_facts
 
-        # 短路预检：已知故障模式可跳过 DIAGNOSING（REQ-F-02 验收标准 4）
-        pre_diagnosis = match_rules(ctx)
-        if pre_diagnosis is not None and pre_diagnosis.confidence == Confidence.CONFIRMED:
-            pre_diagnosis.diagnosis_source = DiagnosisSource.RULE_MATCH
-            self.state.diagnosis = pre_diagnosis
-            display.print_diagnosis(pre_diagnosis)
-            self._console.print("[dim]已知故障模式，跳过深度诊断[/dim]")
-            self._save()
-            self._transition(WorkflowStep.PLANNING)  # 短路跳过 DIAGNOSING
-            return
-
-        # 逐步模式：COLLECTING 后允许用户查看采集结果、补充描述
-        if not self.auto:
-            supplement = interact.prompt_input("补充描述（回车跳过）", default="")
-            if supplement.strip():
-                self.state.problem_description += f"\n[补充] {supplement.strip()}"
-                ctx.problem_description = self.state.problem_description
+            hallucination_result = check_facts(
+                self.state.problem_description, ctx,
+            )
+            if hallucination_result is not None:
+                self.state.hallucination_check_result = hallucination_result.rule_id
                 self._save()
-            if not interact.confirm("信息采集完成，是否继续?", default=True):
-                self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
+
+                if hallucination_result.contradiction:
+                    self._console.print(
+                        f"\n[warning]⚠ 反幻觉校验: {hallucination_result.message}[/warning]"
+                    )
+                    # 写审计日志
+                    self._write_audit(result="failure", user_input="")
+                    self._mark_done(f"反幻觉拦截: {hallucination_result.message}")
+                    return
+
+            # 短路预检：已知故障模式可跳过 DIAGNOSING（REQ-F-02 验收标准 4）
+            pre_diagnosis = match_rules(ctx)
+            # 记录 RuleMatch Event（短路预检）
+            self._record_event(
+                "RuleMatch",
+                rules_count=len(DIAGNOSIS_RULES),
+                matched_rule_id=pre_diagnosis.root_cause[:80] if pre_diagnosis else None,
+                matched_keywords=[],
+                result="CONFIRMED" if (pre_diagnosis and pre_diagnosis.confidence == Confidence.CONFIRMED) else "NONE",
+                rule_hint=None,
+                diagnosis_source="RULE_MATCH" if (pre_diagnosis and pre_diagnosis.confidence == Confidence.CONFIRMED) else "LLM",
+                status="success",
+            )
+            if pre_diagnosis is not None and pre_diagnosis.confidence == Confidence.CONFIRMED:
+                pre_diagnosis.diagnosis_source = DiagnosisSource.RULE_MATCH
+                self.state.diagnosis = pre_diagnosis
+                display.print_diagnosis(pre_diagnosis)
+                self._console.print("[dim]已知故障模式，跳过深度诊断[/dim]")
+                self._save()
+                self._transition(WorkflowStep.PLANNING)  # 短路跳过 DIAGNOSING
                 return
 
-        self._transition(WorkflowStep.DIAGNOSING)
+            # 逐步模式：COLLECTING 后允许用户查看采集结果、补充描述
+            if not self.auto:
+                supplement = interact.prompt_input("补充描述（回车跳过）", default="")
+                if supplement.strip():
+                    self.state.problem_description += f"\n[补充] {supplement.strip()}"
+                    ctx.problem_description = self.state.problem_description
+                    self._save()
+                if not interact.confirm("信息采集完成，是否继续?", default=True):
+                    # 记录 HITL Event（低风险 continue_confirm）
+                    self._record_event(
+                        "HITL",
+                        type="continue_confirm",
+                        decision="rejected",
+                        guard_level=None,
+                        edited_fields=None,
+                        impact="工作流暂停",
+                    )
+                    self._console.print("[dim]工作流已暂停，可使用 --resume 恢复[/dim]")
+                    return
+                else:
+                    self._record_event(
+                        "HITL",
+                        type="continue_confirm",
+                        decision="confirmed",
+                        guard_level=None,
+                        edited_fields=None,
+                        impact="流程进入 DIAGNOSING",
+                    )
+
+            self._transition(WorkflowStep.DIAGNOSING)
 
     def _do_diagnosing(self) -> None:
         """DIAGNOSING: 根因分析
@@ -460,109 +523,132 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        with self._console.status(
-            "[info]分析故障根因... LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟[/info]",
-            spinner="dots",
-        ):
-            diagnosis = diagnose(
-                problem_description=self.state.problem_description,
-                env_info=self.state.env_info,
-                diagnostic_context=self.state.diagnostic_context,
-                model_adapter=self._model_adapter,
-                kb_store=KnowledgeStore.load(),
-                knowledge_config=self._config.knowledge,
-            )
-
-        self.state.diagnosis = diagnosis
-
-        # 根据来源输出提示（异常处理：明确告知用户故障原因）
-        if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
-            self._console.print(
-                "[error]⚠ LLM 推理服务不可用，已降级为信息不足结论[/error]"
-            )
-        elif diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
-            self._console.print(
-                "[warning]⚠ LLM 输出格式异常（非服务故障），"
-                "模型未能生成结构化 JSON，已降级[/warning]"
-            )
-        elif diagnosis.diagnosis_source == DiagnosisSource.LLM_FALLBACK:
-            self._console.print(
-                "[warning]⚠ LLM 推理结果校验部分失败，已自动修复[/warning]"
-            )
-
-        display.print_diagnosis(diagnosis)
-        self._save()
-
-        # ── LLM 服务不可用时直接终止，不回退补充采集（否则死循环）──
-        # ── FORMAT_FALLBACK（格式异常）不终止，降级后继续流程 ──
-        if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
-            self._console.print(
-                "\n[error]✗ LLM 推理服务不可用，无法完成根因分析。[/error]"
-            )
-            self._console.print(
-                "[dim]  请修复推理服务后使用 galaxy-diag run --resume 恢复[/dim]"
-            )
-            self._mark_done("LLM 推理服务不可用")
-            return
-
-        # FORMAT_FALLBACK：模型可用但输出格式异常，降级终止
-        # （小模型常见问题：能推理但不会严格输出 JSON）
-        # 无有效诊断结论 → 不进 PLANNING，提示更换模型后重跑
-        if diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
-            self._console.print(
-                "\n[warning]⚠ 模型输出格式异常，未能生成结构化诊断结论。[/warning]"
-            )
-            self._console.print(
-                "[dim]  建议使用更大参数的模型（如 qwen3:8b），"
-                "更换后使用 galaxy-diag run --resume 恢复[/dim]"
-            )
-            self._mark_done("LLM 输出格式异常")
-            return
-
-        # 分支判断
-        if diagnosis.confidence == Confidence.INSUFFICIENT:
-            # 无法定位根因：硬终止，提示补充后重跑
-            # （不回退重采、不进 PLANNING——为未知根因生成修复既无意义且有安全风险）
-            # 缺失信息/排查步骤已在上方 print_diagnosis 打印，此处仅收尾提示，避免重复
-            self._console.print(
-                "\n[warning]⚠ 未能确定根因：上述缺失信息是定位关键，"
-                "请补充后重新运行。[/warning]"
-            )
-            self._console.print(
-                "[dim]  使用 galaxy-diag run --resume 恢复本次会话继续分析[/dim]"
-            )
-            self._mark_done("信息不足，未能确定根因")
-            return
-
-        # SUSPECTED：根因尚未完全确认，由用户决定继续修复还是自行排查后重跑
-        if diagnosis.confidence == Confidence.SUSPECTED:
-            if not self.auto:
-                self._console.print(
-                    "\n[warning]⚠ 根因为推测，尚未完全确认。[/warning]"
+        with self._span(WorkflowStep.DIAGNOSING):
+            with self._console.status(
+                "[info]分析故障根因... LLM 推理中，纯 CPU 模式下可能需要 3-5 分钟[/info]",
+                spinner="dots",
+            ):
+                diagnosis = diagnose(
+                    problem_description=self.state.problem_description,
+                    env_info=self.state.env_info,
+                    diagnostic_context=self.state.diagnostic_context,
+                    model_adapter=self._model_adapter,
+                    kb_store=KnowledgeStore.load(),
+                    knowledge_config=self._config.knowledge,
                 )
-                if not interact.confirm(
-                    "是否继续生成修复建议?（否 = 按排查步骤自行排查，补充信息后重跑）",
-                    default=True,
-                ):
-                    self._console.print(
-                        "\n[dim]建议按上述排查步骤自行排查，补充信息后使用 "
-                        "galaxy-diag run --resume 重新运行[/dim]"
-                    )
-                    self._mark_done("推测根因，用户选择自行排查")
-                    return
-            # auto 模式或用户选是：继续到 PLANNING（推测根因仍可作为修复依据，但用户已知情）
-            self._transition(WorkflowStep.PLANNING)
-            return
 
-        # CONFIRMED：继续到 PLANNING
-        if not self.auto:
-            # 逐步模式：展示结论后等待用户确认
-            if not interact.confirm("是否继续生成修复建议?", default=True):
-                # 只需诊断，不进入修复
-                self._mark_done("用户选择仅查看诊断结论")
+            self.state.diagnosis = diagnosis
+
+            # 根据来源输出提示（异常处理：明确告知用户故障原因）
+            if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
+                self._console.print(
+                    "[error]⚠ LLM 推理服务不可用，已降级为信息不足结论[/error]"
+                )
+            elif diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
+                self._console.print(
+                    "[warning]⚠ LLM 输出格式异常（非服务故障），"
+                    "模型未能生成结构化 JSON，已降级[/warning]"
+                )
+            elif diagnosis.diagnosis_source == DiagnosisSource.LLM_FALLBACK:
+                self._console.print(
+                    "[warning]⚠ LLM 推理结果校验部分失败，已自动修复[/warning]"
+                )
+
+            display.print_diagnosis(diagnosis)
+            self._save()
+
+            # ── LLM 服务不可用时直接终止，不回退补充采集（否则死循环）──
+            # ── FORMAT_FALLBACK（格式异常）不终止，降级后继续流程 ──
+            if diagnosis.diagnosis_source == DiagnosisSource.ERROR_FALLBACK:
+                self._console.print(
+                    "\n[error]✗ LLM 推理服务不可用，无法完成根因分析。[/error]"
+                )
+                self._console.print(
+                    "[dim]  请修复推理服务后使用 galaxy-diag run --resume 恢复[/dim]"
+                )
+                self._mark_done("LLM 推理服务不可用")
                 return
 
-        self._transition(WorkflowStep.PLANNING)
+            # FORMAT_FALLBACK：模型可用但输出格式异常，降级终止
+            if diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
+                self._console.print(
+                    "\n[warning]⚠ 模型输出格式异常，未能生成结构化诊断结论。[/warning]"
+                )
+                self._console.print(
+                    "[dim]  建议使用更大参数的模型（如 qwen3:8b），"
+                    "更换后使用 galaxy-diag run --resume 恢复[/dim]"
+                )
+                self._mark_done("LLM 输出格式异常")
+                return
+
+            # 分支判断
+            if diagnosis.confidence == Confidence.INSUFFICIENT:
+                self._console.print(
+                    "\n[warning]⚠ 未能确定根因：上述缺失信息是定位关键，"
+                    "请补充后重新运行。[/warning]"
+                )
+                self._console.print(
+                    "[dim]  使用 galaxy-diag run --resume 恢复本次会话继续分析[/dim]"
+                )
+                self._mark_done("信息不足，未能确定根因")
+                return
+
+            # SUSPECTED：根因尚未完全确认，由用户决定继续修复还是自行排查后重跑
+            if diagnosis.confidence == Confidence.SUSPECTED:
+                if not self.auto:
+                    self._console.print(
+                        "\n[warning]⚠ 根因为推测，尚未完全确认。[/warning]"
+                    )
+                    if not interact.confirm(
+                        "是否继续生成修复建议?（否 = 按排查步骤自行排查，补充信息后重跑）",
+                        default=True,
+                    ):
+                        # HITL Event：SUSPECTED 后用户选择自行排查
+                        self._record_event(
+                            "HITL",
+                            type="continue_confirm",
+                            decision="rejected",
+                            guard_level=None,
+                            edited_fields=None,
+                            impact="流程终止（用户选择自行排查）",
+                        )
+                        self._console.print(
+                            "\n[dim]建议按上述排查步骤自行排查，补充信息后使用 "
+                            "galaxy-diag run --resume 重新运行[/dim]"
+                        )
+                        self._mark_done("推测根因，用户选择自行排查")
+                        return
+                    else:
+                        self._record_event(
+                            "HITL",
+                            type="continue_confirm",
+                            decision="confirmed",
+                            guard_level=None,
+                            edited_fields=None,
+                            impact="流程进入 PLANNING",
+                        )
+                # auto 模式或用户选是：继续到 PLANNING
+                self._transition(WorkflowStep.PLANNING)
+                return
+
+            # CONFIRMED：继续到 PLANNING
+            if not self.auto:
+                # 逐步模式：展示结论后等待用户确认
+                if not interact.confirm("是否继续生成修复建议?", default=True):
+                    # HITL Event：CONFIRMED 后用户选择仅查看
+                    self._record_event(
+                        "HITL",
+                        type="continue_confirm",
+                        decision="rejected",
+                        guard_level=None,
+                        edited_fields=None,
+                        impact="流程终止（用户选择仅查看诊断结论）",
+                    )
+                    # 只需诊断，不进入修复
+                    self._mark_done("用户选择仅查看诊断结论")
+                    return
+
+            self._transition(WorkflowStep.PLANNING)
 
     def _do_planning(self) -> None:
         """PLANNING: 修复建议生成
@@ -586,61 +672,79 @@ class WorkflowEngine:
                 hint="工作流应从 ENV_RECOGNISING 开始",
             )
 
-        with self._console.status(
-            "[info]生成修复建议... LLM 推理中，纯 CPU 模式下可能需要 1-3 分钟[/info]",
-            spinner="dots",
-        ):
-            proposal = generate(
-                diagnosis=self.state.diagnosis,
-                env_info=self.state.env_info,
-                model_adapter=self._model_adapter,
-                prior_failures=self._fix_retry_feedback,  # 回退重生成时回灌 CRITICAL 失败原因
-            )
-        # 消费即清空：无论本次生成是否通过，反馈不跨次保留
-        self._fix_retry_feedback = None
-
-        self.state.fix = proposal
-
-        # 根据来源输出提示
-        if proposal.source == FixSource.ERROR_FALLBACK:
-            self._console.print("[error]⚠ 修复建议生成失败[/error]")
-            for note in proposal.risk_notes:
-                self._console.print(f"  [error]- {note}[/error]")
-            self._mark_done("修复建议生成失败，无法继续")
-            return
-        elif proposal.source == FixSource.FORMAT_FALLBACK:
-            self._console.print("[warning]⚠ 模型输出格式异常，未能生成结构化修复建议[/warning]")
-            for note in proposal.risk_notes:
-                self._console.print(f"  [warning]- {note}[/warning]")
-            self._console.print(
-                "[dim]  建议使用更大参数的模型（如 qwen3:8b）以获得结构化修复建议[/dim]"
-            )
-            self._mark_done("模型输出格式异常，无法生成修复建议")
-            return
-        elif proposal.source == FixSource.LLM_FALLBACK:
-            self._console.print("[warning]⚠ 修复建议部分校验失败，已自动修复[/warning]")
-
-        display.print_fix_proposal(proposal)
-
-        # 占位符自动编辑：有未替换占位符时，直接引导用户填写
-        has_unresolved = any(cmd.editable_params for cmd in proposal.commands)
-        if has_unresolved:
-            from galaxy_diag.fixer.template import is_fully_resolved
-            unresolved_cmds = [cmd for cmd in proposal.commands if not is_fully_resolved(cmd)]
-            if unresolved_cmds:
-                self._console.print(
-                    f"\n[warning]⚠ 检测到 {len(unresolved_cmds)} 条命令含未替换的占位符，请填写实际值[/warning]"
+        with self._span(WorkflowStep.PLANNING):
+            with self._console.status(
+                "[info]生成修复建议... LLM 推理中，纯 CPU 模式下可能需要 1-3 分钟[/info]",
+                spinner="dots",
+            ):
+                proposal = generate(
+                    diagnosis=self.state.diagnosis,
+                    env_info=self.state.env_info,
+                    model_adapter=self._model_adapter,
+                    prior_failures=self._fix_retry_feedback,  # 回退重生成时回灌 CRITICAL 失败原因
                 )
-                self._edit_fix_params(proposal)
+            # 消费即清空：无论本次生成是否通过，反馈不跨次保留
+            self._fix_retry_feedback = None
 
-        # 逐步模式下允许再次编辑参数
-        if not self.auto and proposal.commands:
-            has_editable = any(cmd.editable_params for cmd in proposal.commands)
-            if has_editable and interact.confirm("是否再次编辑修复参数?", default=False):
-                self._edit_fix_params(proposal)
+            self.state.fix = proposal
 
-        # PLANNING 完成后进入 SECURITY_CHECKING（在修复建议步骤末尾执行检测）
-        self._transition(WorkflowStep.SECURITY_CHECKING)
+            # 根据来源输出提示
+            if proposal.source == FixSource.ERROR_FALLBACK:
+                self._console.print("[error]⚠ 修复建议生成失败[/error]")
+                for note in proposal.risk_notes:
+                    self._console.print(f"  [error]- {note}[/error]")
+                self._mark_done("修复建议生成失败，无法继续")
+                return
+            elif proposal.source == FixSource.FORMAT_FALLBACK:
+                self._console.print("[warning]⚠ 模型输出格式异常，未能生成结构化修复建议[/warning]")
+                for note in proposal.risk_notes:
+                    self._console.print(f"  [warning]- {note}[/warning]")
+                self._console.print(
+                    "[dim]  建议使用更大参数的模型（如 qwen3:8b）以获得结构化修复建议[/dim]"
+                )
+                self._mark_done("模型输出格式异常，无法生成修复建议")
+                return
+            elif proposal.source == FixSource.LLM_FALLBACK:
+                self._console.print("[warning]⚠ 修复建议部分校验失败，已自动修复[/warning]")
+
+            display.print_fix_proposal(proposal)
+
+            # 占位符自动编辑：有未替换占位符时，直接引导用户填写
+            has_unresolved = any(cmd.editable_params for cmd in proposal.commands)
+            if has_unresolved:
+                from galaxy_diag.fixer.template import is_fully_resolved
+                unresolved_cmds = [cmd for cmd in proposal.commands if not is_fully_resolved(cmd)]
+                if unresolved_cmds:
+                    self._console.print(
+                        f"\n[warning]⚠ 检测到 {len(unresolved_cmds)} 条命令含未替换的占位符，请填写实际值[/warning]"
+                    )
+                    # HITL Event：param_edit（占位符填写）
+                    self._record_event(
+                        "HITL",
+                        type="param_edit",
+                        decision="edited",
+                        guard_level=None,
+                        edited_fields=[p for cmd in unresolved_cmds for p in cmd.editable_params],
+                        impact="占位符已填写，进入 SECURITY_CHECKING",
+                    )
+                    self._edit_fix_params(proposal)
+
+            # 逐步模式下允许再次编辑参数
+            if not self.auto and proposal.commands:
+                has_editable = any(cmd.editable_params for cmd in proposal.commands)
+                if has_editable and interact.confirm("是否再次编辑修复参数?", default=False):
+                    self._record_event(
+                        "HITL",
+                        type="param_edit",
+                        decision="edited",
+                        guard_level=None,
+                        edited_fields=[p for cmd in proposal.commands for p in cmd.editable_params],
+                        impact="参数已编辑，进入 SECURITY_CHECKING",
+                    )
+                    self._edit_fix_params(proposal)
+
+            # PLANNING 完成后进入 SECURITY_CHECKING（在修复建议步骤末尾执行检测）
+            self._transition(WorkflowStep.SECURITY_CHECKING)
 
     def _do_security_checking(self) -> None:
         """SECURITY_CHECKING: D-03 生成后检测（代码质量保障）
@@ -655,23 +759,36 @@ class WorkflowEngine:
         if not self.state.fix or not self.state.env_info:
             raise WorkflowError("缺少修复建议或环境信息")
 
-        proposal = self.state.fix
-        env_type = self.state.env_info.env_type
+        with self._span(WorkflowStep.SECURITY_CHECKING):
+            proposal = self.state.fix
+            env_type = self.state.env_info.env_type
 
-        # 运行 D-03 检测（先检测再判断，以便在耗尽时展示本次 CRITICAL 原因）
-        self._console.print("[info]执行生成后检测 (D-03)...[/info]")
-        result = check(
-            commands=proposal.commands,
-            script=proposal.script,
-            script_language=proposal.script_language,
-            env_type=env_type,
-            has_docker_cli=self.state.env_info.has_docker_cli,
-            has_kubectl_cli=self.state.env_info.has_kubectl_cli,
-        )
+            # 运行 D-03 检测（先检测再判断，以便在耗尽时展示本次 CRITICAL 原因）
+            self._console.print("[info]执行生成后检测 (D-03)...[/info]")
+            result = check(
+                commands=proposal.commands,
+                script=proposal.script,
+                script_language=proposal.script_language,
+                env_type=env_type,
+                has_docker_cli=self.state.env_info.has_docker_cli,
+                has_kubectl_cli=self.state.env_info.has_kubectl_cli,
+            )
 
-        proposal.check_passed = result.passed
-        proposal.check_issues = [i.message for i in result.issues]
-        proposal.check_detail = result
+            # 记录 SecurityCheck Event（D-03）
+            guard_level = "critical" if result.has_critical else ("warning" if result.has_warning else "pass")
+            self._record_event(
+                "SecurityCheck",
+                check_type="d03_multi_check",
+                guard_level=guard_level,
+                matched_patterns=[i.message[:80] for i in result.issues],
+                impact_summary=None,
+                message=f"{len(result.issues)} 个问题" if result.issues else None,
+                status="success",
+            )
+
+            proposal.check_passed = result.passed
+            proposal.check_issues = [i.message for i in result.issues]
+            proposal.check_detail = result
         self._save()
 
         if result.has_critical:
@@ -738,11 +855,23 @@ class WorkflowEngine:
         """
         self._console.print("[info]执行前熔断检查 (E-02)...[/info]")
 
-        guard_result = danger.execution_guard_check(
-            proposal=self.state.fix,
-            env_type=self.state.env_info.env_type if self.state.env_info else EnvironmentType.BARE_METAL,
-        )
-        self._guard_result = guard_result
+        with self._span(WorkflowStep.EXECUTION_GUARD):
+            guard_result = danger.execution_guard_check(
+                proposal=self.state.fix,
+                env_type=self.state.env_info.env_type if self.state.env_info else EnvironmentType.BARE_METAL,
+            )
+            self._guard_result = guard_result
+
+            # 记录 SecurityCheck Event（execution_guard）
+            self._record_event(
+                "SecurityCheck",
+                check_type="execution_guard",
+                guard_level=guard_result.level,
+                matched_patterns=[p.description[:80] for p in guard_result.matched_patterns],
+                impact_summary=guard_result.impact_summary,
+                message=guard_result.message[:200] if guard_result.message else None,
+                status="success",
+            )
 
         # 渲染熔断结果
         if guard_result.level == "pass":
@@ -781,97 +910,140 @@ class WorkflowEngine:
         if not proposal:
             raise WorkflowError("无可审核的修复建议")
 
-        # ── 执行前熔断结果处理 ──
-        guard_result = getattr(self, "_guard_result", None)
-        if guard_result is None:
-            guard_result = GuardResult(level="pass")
-        guard_level = guard_result.level if isinstance(guard_result, GuardResult) else "pass"
+        with self._span(WorkflowStep.REVIEWING):
+            # ── 执行前熔断结果处理 ──
+            guard_result = getattr(self, "_guard_result", None)
+            if guard_result is None:
+                guard_result = GuardResult(level="pass")
+            guard_level = guard_result.level if isinstance(guard_result, GuardResult) else "pass"
 
-        if guard_level in ("warning", "critical"):
-            self._console.print(
-                f"\n[{'danger' if guard_level == 'critical' else 'warning'}]"
-                f"⚠ 执行前熔断检测到{'危险' if guard_level == 'critical' else '警告'}操作"
-                f"[/{'danger' if guard_level == 'critical' else 'warning'}]"
-            )
-            if guard_result.impact_summary:
-                self._console.print(f"  [warning]影响范围: {guard_result.impact_summary}[/warning]")
+            if guard_level in ("warning", "critical"):
+                self._console.print(
+                    f"\n[{'danger' if guard_level == 'critical' else 'warning'}]"
+                    f"⚠ 执行前熔断检测到{'危险' if guard_level == 'critical' else '警告'}操作"
+                    f"[/{'danger' if guard_level == 'critical' else 'warning'}]"
+                )
+                if guard_result.impact_summary:
+                    self._console.print(f"  [warning]影响范围: {guard_result.impact_summary}[/warning]")
 
-            # 要求输入 CONFIRM 全称以确认
-            self._console.print(
-                "\n[danger]此操作需要额外确认，请输入 CONFIRM 以继续[/danger]"
-            )
-            try:
-                confirm_input = input("请输入: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                self._console.print("\n[dim]确认已取消，工作流终止[/dim]")
-                self._mark_rejected()
-                return
+                # 要求输入 CONFIRM 全称以确认
+                self._console.print(
+                    "\n[danger]此操作需要额外确认，请输入 CONFIRM 以继续[/danger]"
+                )
+                try:
+                    confirm_input = input("请输入: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    self._console.print("\n[dim]确认已取消，工作流终止[/dim]")
+                    self._record_event(
+                        "HITL",
+                        type="review_confirm",
+                        decision="rejected",
+                        guard_level=guard_level,
+                        edited_fields=None,
+                        impact="流程终止（确认取消）",
+                    )
+                    self._mark_rejected()
+                    return
 
-            if confirm_input != "CONFIRM":
-                self._console.print("[dim]确认输入不匹配，工作流终止[/dim]")
-                self._mark_rejected()
-                return
+                if confirm_input != "CONFIRM":
+                    self._console.print("[dim]确认输入不匹配，工作流终止[/dim]")
+                    self._record_event(
+                        "HITL",
+                        type="review_confirm",
+                        decision="rejected",
+                        guard_level=guard_level,
+                        edited_fields=None,
+                        impact="流程终止（CONFIRM 输入不匹配）",
+                    )
+                    self._mark_rejected()
+                    return
 
-            self._console.print("[success]✓ 危险操作已确认[/success]")
+                self._console.print("[success]✓ 危险操作已确认[/success]")
 
-        # 展示操作摘要
-        self._console.print("\n[heading]📋 操作摘要[/heading]")
-        if proposal.commands:
-            self._console.print("[dim]将要执行以下命令:[/dim]")
-            for i, cmd in enumerate(proposal.commands, 1):
-                verify_tag = " [验证]" if cmd.is_verification else ""
-                self._console.print(f"  {i}. [info]{cmd.command}[/info]{verify_tag}")
-                if cmd.description:
-                    self._console.print(f"     {cmd.description}")
+            # 展示操作摘要
+            self._console.print("\n[heading]📋 操作摘要[/heading]")
+            if proposal.commands:
+                self._console.print("[dim]将要执行以下命令:[/dim]")
+                for i, cmd in enumerate(proposal.commands, 1):
+                    verify_tag = " [验证]" if cmd.is_verification else ""
+                    self._console.print(f"  {i}. [info]{cmd.command}[/info]{verify_tag}")
+                    if cmd.description:
+                        self._console.print(f"     {cmd.description}")
 
-        if proposal.impact_scope:
-            self._console.print(f"\n[warning]📊 影响范围: {proposal.impact_scope}[/warning]")
+            if proposal.impact_scope:
+                self._console.print(f"\n[warning]📊 影响范围: {proposal.impact_scope}[/warning]")
 
-        if proposal.risk_notes:
-            self._console.print("[warning]⚠ 风险提示:[/warning]")
-            for note in proposal.risk_notes:
-                self._console.print(f"  - {note}")
+            if proposal.risk_notes:
+                self._console.print("[warning]⚠ 风险提示:[/warning]")
+                for note in proposal.risk_notes:
+                    self._console.print(f"  - {note}")
 
-        # 交互式操作菜单（支持编辑参数、删除步骤、重排步骤）
-        while True:
-            self._console.print("\n请选择操作:")
-            self._console.print("  [success]y[/success] - 确认执行")
-            self._console.print("  [danger]n[/danger] - 拒绝（终止工作流）")
-            self._console.print("  [info]e[/info] - 编辑参数")
-            self._console.print("  [info]d[/info] - 删除步骤")
-            self._console.print("  [info]r[/info] - 重排步骤顺序")
+            # 交互式操作菜单（支持编辑参数、删除步骤、重排步骤）
+            while True:
+                self._console.print("\n请选择操作:")
+                self._console.print("  [success]y[/success] - 确认执行")
+                self._console.print("  [danger]n[/danger] - 拒绝（终止工作流）")
+                self._console.print("  [info]e[/info] - 编辑参数")
+                self._console.print("  [info]d[/info] - 删除步骤")
+                self._console.print("  [info]r[/info] - 重排步骤顺序")
 
-            try:
-                choice = input("请输入 (y/n/e/d/r): ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                raise
+                try:
+                    choice = input("请输入 (y/n/e/d/r): ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    raise
 
-            if choice in ("y", "yes"):
-                # 用户确认 → 写审计日志（confirmed）→ 自动创建快照 → 执行
-                self._write_audit(result="confirmed", user_input="CONFIRM" if guard_level != "pass" else "y")
-                self._transition(WorkflowStep.SNAPSHOT)
-                return
-            elif choice in ("n", "no"):
-                self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
-                self._write_audit(result="rejected", user_input="n")
-                self._mark_rejected()
-                return
-            elif choice in ("e", "edit"):
-                if proposal.commands:
-                    self._edit_fix_params(proposal)
-                # 编辑后重走安全检测（回到修复建议步骤内部）
-                self._transition(WorkflowStep.SECURITY_CHECKING)
-                return
-            elif choice in ("d", "delete"):
-                self._edit_delete_step(proposal)
-                # 删除步骤后重新展示
-                display.print_fix_proposal(proposal)
-            elif choice in ("r", "reorder"):
-                self._edit_reorder_steps(proposal)
-                # 重排后重新展示
-                display.print_fix_proposal(proposal)
-            else:
-                self._console.print("[dim]无效输入，请重新选择[/dim]")
+                if choice in ("y", "yes"):
+                    # 用户确认 → 写审计日志（confirmed）→ 自动创建快照 → 执行
+                    self._write_audit(result="confirmed", user_input="CONFIRM" if guard_level != "pass" else "y")
+                    # HITL Event：审核确认（安全关键，同时进 AuditLog 与 Trace）
+                    self._record_event(
+                        "HITL",
+                        type="review_confirm",
+                        decision="confirmed",
+                        guard_level=guard_level,
+                        edited_fields=None,
+                        impact="流程进入 SNAPSHOT（执行修复）",
+                    )
+                    self._transition(WorkflowStep.SNAPSHOT)
+                    return
+                elif choice in ("n", "no"):
+                    self._console.print("[dim]用户拒绝执行，工作流终止[/dim]")
+                    self._write_audit(result="rejected", user_input="n")
+                    self._record_event(
+                        "HITL",
+                        type="review_reject",
+                        decision="rejected",
+                        guard_level=guard_level,
+                        edited_fields=None,
+                        impact="流程终止（用户拒绝）",
+                    )
+                    self._mark_rejected()
+                    return
+                elif choice in ("e", "edit"):
+                    if proposal.commands:
+                        self._edit_fix_params(proposal)
+                    # HITL Event：参数编辑
+                    self._record_event(
+                        "HITL",
+                        type="param_edit",
+                        decision="edited",
+                        guard_level=guard_level,
+                        edited_fields=[p for cmd in proposal.commands for p in cmd.editable_params],
+                        impact="重新进入 SECURITY_CHECKING 复检",
+                    )
+                    # 编辑后重走安全检测（回到修复建议步骤内部）
+                    self._transition(WorkflowStep.SECURITY_CHECKING)
+                    return
+                elif choice in ("d", "delete"):
+                    self._edit_delete_step(proposal)
+                    # 删除步骤后重新展示
+                    display.print_fix_proposal(proposal)
+                elif choice in ("r", "reorder"):
+                    self._edit_reorder_steps(proposal)
+                    # 重排后重新展示
+                    display.print_fix_proposal(proposal)
+                else:
+                    self._console.print("[dim]无效输入，请重新选择[/dim]")
 
     def _do_snapshot(self) -> None:
         """SNAPSHOT: 创建恢复快照
@@ -883,25 +1055,26 @@ class WorkflowEngine:
         """
         self._console.print("[info]正在创建快照...[/info]")
 
-        proposal = self.state.fix
-        try:
-            snap_meta = snapshot.create_snapshot(
-                proposal=proposal,
-                session_id=self.state.session_id,
-            )
-        except GalaxyDiagError as e:
-            self._console.print(f"\n[danger]✗ {e.message}[/danger]")
-            if e.hint:
-                self._console.print(f"  💡 {e.hint}")
-            # fail-safe：快照失败阻止执行
-            self._console.print("[warning]快照创建失败，已阻止执行以保护系统[/warning]")
-            self._write_audit(result="failure", user_input="")
-            self._save()
-            return
+        with self._span(WorkflowStep.SNAPSHOT):
+            proposal = self.state.fix
+            try:
+                snap_meta = snapshot.create_snapshot(
+                    proposal=proposal,
+                    session_id=self.state.session_id,
+                )
+            except GalaxyDiagError as e:
+                self._console.print(f"\n[danger]✗ {e.message}[/danger]")
+                if e.hint:
+                    self._console.print(f"  💡 {e.hint}")
+                # fail-safe：快照失败阻止执行
+                self._console.print("[warning]快照创建失败，已阻止执行以保护系统[/warning]")
+                self._write_audit(result="failure", user_input="")
+                self._save()
+                return
 
-        self.state.snapshot = snap_meta
-        self._console.print(f"[success]✓ 快照已创建: {snap_meta.snapshot_id}[/success]")
-        self._transition(WorkflowStep.EXECUTING)
+            self.state.snapshot = snap_meta
+            self._console.print(f"[success]✓ 快照已创建: {snap_meta.snapshot_id}[/success]")
+            self._transition(WorkflowStep.EXECUTING)
 
     def _do_executing(self) -> None:
         """EXECUTING: 执行修复（仅非验证命令）
@@ -914,65 +1087,66 @@ class WorkflowEngine:
         """
         self._console.print("[info]执行修复...[/info]")
 
-        proposal = self.state.fix
+        with self._span(WorkflowStep.EXECUTING):
+            proposal = self.state.fix
 
-        # 过滤出本机可执行的修复命令（不含验证步骤、不含 requires_host 命令）
-        # 验证命令留给 VERIFYING；requires_host 命令不在本机执行
-        fix_commands = [cmd for cmd in proposal.commands
-                        if not cmd.is_verification and not cmd.requires_host]
-        host_commands = [cmd for cmd in proposal.commands
-                         if not cmd.is_verification and cmd.requires_host]
+            # 过滤出本机可执行的修复命令（不含验证步骤、不含 requires_host 命令）
+            # 验证命令留给 VERIFYING；requires_host 命令不在本机执行
+            fix_commands = [cmd for cmd in proposal.commands
+                            if not cmd.is_verification and not cmd.requires_host]
+            host_commands = [cmd for cmd in proposal.commands
+                             if not cmd.is_verification and cmd.requires_host]
 
-        if host_commands:
-            self._console.print("\n[warning]⚠ 以下修复命令需在宿主机执行（容器内无法执行）:[/warning]")
-            for hc in host_commands:
-                self._console.print(f"  [dim]- {hc.command}  ({hc.description})[/dim]")
-            self._console.print("")
+            if host_commands:
+                self._console.print("\n[warning]⚠ 以下修复命令需在宿主机执行（容器内无法执行）:[/warning]")
+                for hc in host_commands:
+                    self._console.print(f"  [dim]- {hc.command}  ({hc.description})[/dim]")
+                self._console.print("")
 
-        fix_only_proposal = FixProposal(
-            commands=fix_commands,
-            script=proposal.script,
-            script_language=proposal.script_language,
-            risk_notes=proposal.risk_notes,
-            impact_scope=proposal.impact_scope,
-            source=proposal.source,
-        )
-
-        exec_result = executor.run(fix_only_proposal)
-
-        # 展示执行输出
-        if exec_result.output:
-            for line in exec_result.output.split("\n"):
-                self._console.print(f"  {line}")
-
-        if exec_result.success:
-            self._console.print("[success]✓ 修复执行完成[/success]")
-            self._write_audit(
-                result="success",
-                user_input="",
-                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+            fix_only_proposal = FixProposal(
+                commands=fix_commands,
+                script=proposal.script,
+                script_language=proposal.script_language,
+                risk_notes=proposal.risk_notes,
+                impact_scope=proposal.impact_scope,
+                source=proposal.source,
             )
-            self._transition(WorkflowStep.VERIFYING)
-        else:
-            # 执行失败 → 自动回滚
-            self._console.print(
-                f"\n[danger]✗ 修复执行失败（步骤 {exec_result.failed_step}），开始自动回滚...[/danger]"
-            )
-            if self.state.snapshot:
-                try:
-                    rb_result = snapshot.rollback(self.state.snapshot.snapshot_id)
-                    self._console.print(f"[warning]⚠ 已从快照回滚: {rb_result.message}[/warning]")
-                except GalaxyDiagError as e:
-                    self._console.print(f"[danger]✗ 回滚失败: {e.message}，请人工介入[/danger]")
+
+            exec_result = executor.run(fix_only_proposal)
+
+            # 展示执行输出
+            if exec_result.output:
+                for line in exec_result.output.split("\n"):
+                    self._console.print(f"  {line}")
+
+            if exec_result.success:
+                self._console.print("[success]✓ 修复执行完成[/success]")
+                self._write_audit(
+                    result="success",
+                    user_input="",
+                    snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+                )
+                self._transition(WorkflowStep.VERIFYING)
             else:
-                self._console.print("[danger]✗ 无可用快照，无法回滚，请人工介入[/danger]")
+                # 执行失败 → 自动回滚
+                self._console.print(
+                    f"\n[danger]✗ 修复执行失败（步骤 {exec_result.failed_step}），开始自动回滚...[/danger]"
+                )
+                if self.state.snapshot:
+                    try:
+                        rb_result = snapshot.rollback(self.state.snapshot.snapshot_id)
+                        self._console.print(f"[warning]⚠ 已从快照回滚: {rb_result.message}[/warning]")
+                    except GalaxyDiagError as e:
+                        self._console.print(f"[danger]✗ 回滚失败: {e.message}，请人工介入[/danger]")
+                else:
+                    self._console.print("[danger]✗ 无可用快照，无法回滚，请人工介入[/danger]")
 
-            self._write_audit(
-                result="rollback",
-                user_input="",
-                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
-            )
-            self._mark_rollback(f"执行失败于步骤 {exec_result.failed_step}")
+                self._write_audit(
+                    result="rollback",
+                    user_input="",
+                    snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+                )
+                self._mark_rollback(f"执行失败于步骤 {exec_result.failed_step}")
 
     def _do_verifying(self) -> None:
         """VERIFYING: 结果验证
@@ -987,54 +1161,55 @@ class WorkflowEngine:
 
         self._console.print("[info]验证修复结果...[/info]")
 
-        proposal = self.state.fix
-        verify_result = verifier.verify(proposal)
+        with self._span(WorkflowStep.VERIFYING):
+            proposal = self.state.fix
+            verify_result = verifier.verify(proposal)
 
-        # 展示验证输出
-        if verify_result.output:
-            for line in verify_result.output.split("\n"):
-                self._console.print(f"  {line}")
+            # 展示验证输出
+            if verify_result.output:
+                for line in verify_result.output.split("\n"):
+                    self._console.print(f"  {line}")
 
-        if verify_result.success:
-            if verify_result.total_steps == 0:
-                # 无验证命令：保守通过但提示人工确认
-                if verify_result.host_required_commands:
-                    self._console.print(
-                        "[warning]⚠ 所有验证命令需在宿主机执行，无法在本机自动验证[/warning]"
-                    )
+            if verify_result.success:
+                if verify_result.total_steps == 0:
+                    # 无验证命令：保守通过但提示人工确认
+                    if verify_result.host_required_commands:
+                        self._console.print(
+                            "[warning]⚠ 所有验证命令需在宿主机执行，无法在本机自动验证[/warning]"
+                        )
+                    else:
+                        self._console.print(
+                            "[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]"
+                        )
                 else:
                     self._console.print(
-                        "[warning]⚠ 未执行验证（修复建议无验证步骤），建议人工确认修复效果[/warning]"
+                        f"[success]✓ 修复验证通过: {verify_result.passed_steps}/{verify_result.total_steps} 步骤成功[/success]"
                     )
+                # 展示需宿主机执行的验证/修复命令
+                if verify_result.host_required_commands:
+                    self._console.print("\n[warning]⚠ 以下命令需在宿主机执行以完成验证:[/warning]")
+                    for hc in verify_result.host_required_commands:
+                        self._console.print(f"  [dim]- {hc}[/dim]")
+                self._write_audit(result="success")
+                self._mark_done("修复验证通过")
             else:
+                # 验证失败：展示失败详情 + 进一步方案 + 回滚提示
                 self._console.print(
-                    f"[success]✓ 修复验证通过: {verify_result.passed_steps}/{verify_result.total_steps} 步骤成功[/success]"
+                    f"\n[danger]✗ 修复验证失败: 步骤 {verify_result.failed_step} "
+                    f"\"{verify_result.failed_description}\" 返回非零退出码[/danger]"
                 )
-            # 展示需宿主机执行的验证/修复命令
-            if verify_result.host_required_commands:
-                self._console.print("\n[warning]⚠ 以下命令需在宿主机执行以完成验证:[/warning]")
-                for hc in verify_result.host_required_commands:
-                    self._console.print(f"  [dim]- {hc}[/dim]")
-            self._write_audit(result="success")
-            self._mark_done("修复验证通过")
-        else:
-            # 验证失败：展示失败详情 + 进一步方案 + 回滚提示
-            self._console.print(
-                f"\n[danger]✗ 修复验证失败: 步骤 {verify_result.failed_step} "
-                f"\"{verify_result.failed_description}\" 返回非零退出码[/danger]"
-            )
-            self._console.print(
-                f"  [dim]验证结果: {verify_result.passed_steps}/{verify_result.total_steps} 步骤通过[/dim]"
-            )
+                self._console.print(
+                    f"  [dim]验证结果: {verify_result.passed_steps}/{verify_result.total_steps} 步骤通过[/dim]"
+                )
 
-            # 展示进一步解决方案概要 + 回滚提示
-            display.print_next_steps(
-                proposal=proposal,
-                snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
-            )
+                # 展示进一步解决方案概要 + 回滚提示
+                display.print_next_steps(
+                    proposal=proposal,
+                    snapshot_id=self.state.snapshot.snapshot_id if self.state.snapshot else None,
+                )
 
-            self._write_audit(result="verify_failed")
-            self._mark_done("修复验证未通过")
+                self._write_audit(result="verify_failed")
+                self._mark_done("修复验证未通过")
 
     # ===== 状态转换 =====
 
@@ -1092,6 +1267,83 @@ class WorkflowEngine:
     def _save(self) -> None:
         """持久化当前状态"""
         save_state(self.state)
+
+    # ===== Trace 辅助方法（REQ-X-04）=====
+
+    def _start_trace(self) -> None:
+        """初始化 TraceRecorder 并设置 contextvar
+
+        resume 场景下追加到同一文件（不重写）。
+        """
+        if self._recorder is not None:
+            return  # 已初始化（resume 同一实例）
+        try:
+            from galaxy_diag.trace.recorder import (
+                TraceRecorder,
+                set_recorder,
+            )
+            self._recorder = TraceRecorder(
+                session_id=self.state.session_id,
+                problem_description=self.state.problem_description,
+            )
+            self._recorder_token = set_recorder(self._recorder)
+        except Exception as e:
+            # trace 初始化失败不阻塞工作流
+            self._console.print(f"[dim]  [trace 初始化失败: {e}，本次运行不记录推理链路][/dim]")
+            self._recorder = None
+            self._recorder_token = None
+
+    def _stop_trace(self, final_status: str) -> None:
+        """关闭 trace 并重置 contextvar"""
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.close_trace(final_status)
+        except Exception:
+            pass
+        if self._recorder_token is not None:
+            try:
+                from galaxy_diag.trace.recorder import reset_recorder
+                reset_recorder(self._recorder_token)
+            except Exception:
+                pass
+        self._recorder = None
+        self._recorder_token = None
+
+    def _derive_final_status(self) -> str:
+        """根据 session_status 推导 trace final_status"""
+        status = self.state.session_status
+        if status == SessionStatus.DONE:
+            return "done"
+        if status == SessionStatus.REJECTED:
+            return "rejected"
+        if status == SessionStatus.ROLLED_BACK:
+            return "rolled_back"
+        return "interrupted"
+
+    def _span(self, step: WorkflowStep, *, skip_reason: str | None = None):
+        """获取当前 step 的 Span 上下文管理器（自动维护 sequence_index）
+
+        Args:
+            step: WorkflowStep 枚举
+            skip_reason: 非 None 时为 skipped Span
+        """
+        if self._recorder is None:
+            # 无 recorder：返回 no-op 上下文管理器，保证 with 语法不报错
+            from contextlib import nullcontext
+            return nullcontext()
+        step_name = step.value
+        self._span_seq[step_name] = self._span_seq.get(step_name, 0) + 1
+        return self._recorder.span(step_name, self._span_seq[step_name], skip_reason=skip_reason)
+
+    def _record_event(self, event_type: str, **kwargs) -> None:
+        """便捷记录 Event（recorder 不存在时 no-op）"""
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.record_event(event_type, **kwargs)
+        except Exception:
+            pass
 
     def _write_audit(
         self,
