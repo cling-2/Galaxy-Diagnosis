@@ -415,9 +415,9 @@ Skipped Span：只有 span_open（含 status=skipped + skip_reason），不产�
 
 ```
 src/galaxy_diag/trace/
-├── __init__.py
-├── recorder.py       # TraceRecorder 类（span 上下文管理器、record_event、JSONL 写入）
-└── viewer.py         # trace 查询与展示（加载 JSONL → 重建树 → Rich 渲染）
+├── __init__.py        # 导出 TraceRecorder + get_recorder/set_recorder/reset_recorder
+├── recorder.py        # TraceRecorder 类（span 上下文管理器、record_event、JSONL 写入）
+└── viewer.py          # trace 查询与展示（加载 JSONL → 重建树 → Rich 渲染）
 ```
 
 ### 核心类
@@ -430,9 +430,9 @@ src/galaxy_diag/trace/
 - 内部：`_write_line(record_dict)` → `json.dumps()` + 文件追加 + flush
 - 无 recorder 时（contextvar 为 None）：所有方法 no-op
 
-**`TraceViewer`**（viewer.py）：
-- `load_trace(session_id)` → 逐行读取 JSONL → 重建 Trace→Span→Event 树
-- `render(trace)` → Rich 树形渲染（按 Step 分组、关键决策高亮）
+**`viewer.py`**（由 `cmd_trace.py` 调用）：
+- `load_trace(session_id)` → 逐行 `json.loads()` 读取 JSONL → 重建 `TraceTree`（含 `TraceSpan` / `TraceEvent`）
+- `render(tree, *, verbose)` → Rich 树形渲染（按 Step 分组、关键决策高亮）
 - 容错：损坏行跳过 + warning；未关闭 Span 标记 interrupted
 
 ### 接入点

@@ -73,7 +73,7 @@
 | `model/client.py` | 新增 `embed(texts, model=None) -> list[list[float]]`，内部调 `client.embeddings.create`，复用 `timeout`/`max_retries`，失败抛 `ModelCallError` |
 | `model/mock_client.py` | 新增 `embed` mock，返回可预设的固定向量（供单测） |
 | `config/defaults.py` | `LLMConfig` 新增 `embed_model: str = ""`（空表示未启用 RAG） |
-| `config.yaml` | `llm:` 段新增 `embed_model: "nomic-embed-text"` |
+| `config.yaml` | `llm:` 段新增 `embed_model`（默认 `"bge:large"`；留空禁用 RAG） |
 | `model/precheck.py` | 体检 `embed_model`：非空时确认模型已导入且 `/api/embeddings` 可用 |
 
 ```python
@@ -169,7 +169,7 @@ CNI 插件配置文件 /etc/cni/net.d/ 中默认网络插件与实际运行时�
 @dataclass
 class KnowledgeCase:
     """一条客户案例（内存表示）"""
-    case_id: str                       # 唯一标识（导入时生成，如 kb_<timestamp>_<short_hash>）
+    case_id: str                       # 唯一标识（导入时生成，kb_ + 内容 sha256 前 12 位，确定性）
     content: str                       # 案例全文
     env_type: EnvironmentType | None   # frontmatter 解析；None=全环境适用
     tags: list[str]                    # frontmatter 自由标签

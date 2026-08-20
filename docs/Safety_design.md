@@ -343,7 +343,7 @@ def execution_guard_check(
 
 确认输入走 stdin，不经过 LLM 通道。这是防 Prompt 注入的核心防线：即使日志内容或用户描述中嵌入"用户已确认执行"等恶意文本，LLM 也无法控制 stdin 输入。
 
-对齐架构设计 §6.2 安全关卡详细设计：审核确认的实现方式是 `review.py` 读 stdin 的 `[y/N]`，不经过 LangChain 的任何回调。
+对齐架构设计 §6.2 安全关卡详细设计：审核确认的实现方式是 `review.py` 读 stdin 的 `[y/N]`，不经过任何 LLM / Agent 框架的回调通道。
 
 ### 普通确认流程
 
@@ -723,7 +723,7 @@ safety 模块的内部状态在用户可见 7 步中的归属（对齐 `Workflow
 | 安全关卡 | 实现方式 | 绕过防护 |
 |---------|---------|---------|
 | 危险命令拦截 | `danger.py` 正则 + 变量展开检测匹配 `patterns.py` | 不可能——在用户确认前拦截，转入 CONFIRM 流程 |
-| 人工确认 | `review.py` 读 stdin 的 `[y/N]` | 不可能——stdin 不经过 LangChain 回调 |
+| 人工确认 | `review.py` 读 stdin 的 `[y/N]` | 不可能——stdin 不经过任何 LLM / Agent 框架的回调 |
 | 二次确认 | 危险操作要求输入 `CONFIRM` | 不可能——Prompt 注入无法控制 stdin |
 | 审计日志 | `audit.py` 用 `json.dumps().write()` 直接写文件 | 不可能——Agent 没有修改审计日志的 Tool |
 | 快照回滚 | `snapshot.py` 备份到 `.bak/` | 回滚本身也需经 review.py 确认（手动回滚） |

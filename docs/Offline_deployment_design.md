@@ -3,7 +3,7 @@
 - **日期**：2026-08-04
 - **对应需求**：REQ-A-01（模型离线部署与运行）、技术约束 8.1（模型协议）
 - **语言决策**：新建 Python CLI 项目（详见下文"语言决策与迁移策略"）
-- **模型/服务选型**：qwen3:8b + Ollama（已完成本地服务化）
+- **模型/服务选型**：qwen3 系列 + Ollama（`config.yaml` 默认 `qwen3:1.7b`，生产建议 `qwen3:8b`；已完成本地服务化）
 - **目标环境**：典型 KVM 虚拟化环境，4 核 / 16 GB 内存 / 无 GPU，Ubuntu 22.04 x86_64
 
 ## 1. 背景与目标
@@ -20,11 +20,13 @@
 
 ### 目标环境与最低配置对照
 
-| 资源项 | qwen3:8b 实际需求 | 目标环境 | 最低配置（config 默认值） | 判定 |
+> 实际最低要求根据 `config.yaml` 中 `llm.model` 的参数量自动推导（`config/model_profile.py`），下表为 `qwen3:8b` 的配置。
+
+| 资源项 | qwen3:8b 实际需求 | 目标环境 | qwen3:8b 最低配置（推导值） | 判定 |
 |--------|------------------|---------|------------------------|------|
 | 模型文件 | ~4.9 GB (Q4_K_M) | — | — | — |
-| 运行时内存 | ~6 GB (加载 ×1.2) | 16 GB | 8 GB | ✅ 富余 |
-| CPU 核数 | ≥4 核可流畅推理 | 4 核 | 4 核 | ✅ 满足 |
+| 运行时内存 | ~6 GB (加载 ×1.2) | 16 GB | 7.4 GB | ✅ 富余 |
+| CPU 核数 | ≥4 核可流畅推理 | 4 核 | 8 核（推导值，4核可跑但慢） | ✅ 可用 |
 | GPU | 不需要 | 无 | 可选 | ✅ CPU 模式 |
 
 ## 2. 语言决策与迁移策略
@@ -48,31 +50,35 @@
 
 ## 3. 项目结构
 
+> 以下为 A-01 步骤引入的文件，后续步骤增量扩展为完整项目（详见 `galaxy-diag-architecture-design.md` §3）。
+
 ```
 galaxy-diag/
-├── config/
-│   ├── __init__.py
-│   ├── schema.py           # LLMConfig, HardwareRequirement, AppConfig 数据类
-│   └── loader.py           # YAML 加载 → 环境变量覆盖 → 校验
-├── model/
-│   ├── __init__.py
-│   ├── adapter.py          # ModelAdapter 统一调用入口
-│   └── health.py           # Ollama 健康检查
-├── precheck/
-│   ├── __init__.py
-│   └── hardware.py         # 硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
+├── src/galaxy_diag/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── defaults.py       # LLMConfig, HardwareRequirement, KnowledgeConfig, AppConfig
+│   │   ├── settings.py       # YAML 加载 → 环境变量覆盖 → 默认值
+│   │   └── model_profile.py  # 按模型参数量自动推导硬件要求
+│   ├── model/
+│   │   ├── __init__.py
+│   │   ├── client.py         # ModelAdapter：OpenAI 兼容 API 客户端（chat + embed）
+│   │   ├── health.py         # 推理服务健康检查（服务可达→模型存在→推理可用）
+│   │   ├── precheck.py       # 硬件资源预检（CPU/GPU/MEM/DISK，零网络零 LLM）
+│   │   └── mock_client.py    # MockModelAdapter（--mock 测试用）
+│   ├── shared/
+│   │   ├── types.py          # 跨域数据契约
+│   │   ├── constants.py      # 领域知识常量
+│   │   └── errors.py         # 统一异常体系（GalaxyDiagError + 子类）
+│   └── __main__.py           # CLI 入口（python -m galaxy_diag）
 ├── deploy/
-│   ├── prepare_offline.sh  # 联网准备机：下载全部离线介质
-│   ├── install_offline.sh  # 断网客户机：一键安装 Ollama + 模型 + 依赖
-│   └── Modelfile           # Ollama 模型定义文件（离线导入参考）
-├── docs/
-│   ├── 2026-08-04-model-adapter-precheck-design.md  # 本设计文档
-│   └── deployment.md       # 完整离线部署文档
+│   ├── prepare_offline.sh    # 联网准备机：下载 Ollama + 模型 GGUF + Python wheels
+│   ├── install_offline.sh    # 断网客户机：一键安装 Ollama + 模型 + 依赖
+│   └── Modelfile             # Ollama 模型定义文件（离线导入参考）
 ├── tests/
-├── config.yaml             # 默认配置（零外网地址，默认连本地 Ollama）
-├── requirements.txt        # 最小依赖集
-├── errors.py               # 统一错误类（GalaxyDiagError + 子类）
-└── main.py                 # CLI 入口：预检 → 健康检查 → 启动
+├── config.yaml               # 默认配置（零外网地址，model=qwen3:1.7b）
+├── requirements.txt          # 依赖集（openai/httpx/pyyaml/rich/numpy）
+└── pyproject.toml            # 包定义与 CLI 入口注册
 ```
 
 ## 4. 配置设计
@@ -82,22 +88,31 @@ galaxy-diag/
 ```yaml
 llm:
   base_url: "http://localhost:11434/v1"   # Ollama 默认，可改为 vLLM 等地址
-  model: "qwen3:8b"
+  model: "qwen3:1.7b"                     # 默认轻量模型；生产建议 qwen3:8b
   api_key: "ollama"                        # Ollama 不需要真实 key，OpenAI SDK 要求非空
-  timeout: 120
+  timeout: 600                             # 纯 CPU 推理 8B 需 3-5 分钟
   max_retries: 3
+  max_tokens: 1024                         # 最大输出 token，防止无限生成
+  embed_model: "bge:large"                 # RAG embedding 模型；空字符串=禁用 RAG
 
-hardware:
-  min_cpu_cores: 4
-  min_ram_gb: 8.0
-  min_gpu_vram_gb: 6.0                     # GPU 存在时才检查
-  min_disk_gb: 10.0
-  gpu_required: false                      # GPU 可选
+# hardware 段默认根据 llm.model 参数量自动推导；显式字段优先于推导值
+# hardware:
+#   min_cpu_cores: 4
+#   min_ram_gb: 8.0
+#   min_gpu_vram_gb: 6.0
+#   min_disk_gb: 10.0
+#   gpu_required: false
+
+knowledge:                                 # RAG 检索配置（REQ-X-02）
+  top_k: 3
+  min_similarity: 0.0
 ```
 
 ### 4.2 加载优先级
 
-YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL`）→ 代码默认值。
+config.yaml 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL`）→ 数据类默认值。
+
+硬件要求额外规则：显式 `hardware:` 段字段优先于按 `llm.model` 参数量自动推导的值，未配置字段回退到推导值。
 
 ### 4.3 关键决策
 
@@ -113,9 +128,10 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 `ModelAdapter` 是统一的 LLM 调用入口，所有模块通过此类与模型交互：
 
 - `__init__(config: LLMConfig)`：基于配置创建 `openai.OpenAI` 客户端。
-- `chat(messages, **kwargs) -> str`：同步调用，返回助手回复文本。
-- `chat_stream(messages, **kwargs)`：流式调用，返回内容迭代器。
-- `chat_with_tools(messages, tools, **kwargs) -> ChatResponse`：带工具调用的对话，返回封装的 `ChatResponse`（含 `content` + `tool_calls`）。
+- `chat(messages, tools=None, timeout=None, max_tokens=None) -> str | None`：同步对话，返回助手回复文本（含 tool_calls 时通过 `ToolCall` dataclass 返回）；失败抛 `ModelCallError`。
+- `embed(texts, model=None) -> list[list[float]]`：批量文本向量化，供 RAG 检索使用。
+
+另有 `MockModelAdapter`（`model/mock_client.py`）提供零网络实现，`--mock` 模式下替代真实 adapter，使全链路可离线确定性测试。
 
 ### 5.2 健康检查 `HealthChecker`
 
@@ -131,11 +147,11 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 
 | 决策 | 理由 |
 |------|------|
-| 使用 `openai` Python SDK 而非自研 HTTP 客户端 | Ollama 原生兼容 OpenAI API，SDK 内置重试/超时/流式；未来换 vLLM/llama.cpp 仅改 base_url |
-| `chat` / `chat_stream` / `chat_with_tools` 三个方法 | 覆盖后续所有场景：诊断分析用 `chat`，CLI 交互用 `chat_stream`，Agent 工具调用用 `chat_with_tools` |
+| 使用 `openai` Python SDK 而非自研 HTTP 客户端 | Ollama 原生兼容 OpenAI API，SDK 内置重试/超时；未来换 vLLM/llama.cpp 仅改 base_url |
+| `chat` + `embed` 两个核心方法 | `chat` 覆盖诊断/修复所有 LLM 对话场景；`embed` 支持 RAG 知识库向量检索 |
 | 健康检查三步（服务可达 → 模型存在 → 推理可用） | REQ-A-01 验收标准要求"返回推理服务就绪状态"，只检查连通性不够 |
-| `ChatResponse` 封装原始响应 | 后续 Agent 编排需同时拿到 `content` 和 `tool_calls`，统一封装避免散落 |
 | 健康检查同时尝试 Ollama 原生 API 和 OpenAI 兼容 API | 部署时可能直接 `ollama serve` 或走 `/v1` 代理，两种都兼容 |
+| MockModelAdapter 零网络实现 | `--mock` 模式下全链路可离线确定性测试，开发/演示不依赖 Ollama |
 
 ## 6. 硬件资源预检
 
@@ -188,7 +204,9 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 
 ## 7. CLI 入口与启动流程
 
-`main.py` 流程：加载配置 → 硬件预检 → 模型健康检查 → 系统就绪 →（占位）进入 CLI 交互。
+`__main__.py` 委托 `workflow/cli/app.py:main()`，流程：加载配置 → 硬件预检 → 模型健康检查 → 命令分发。
+
+> A-01 步骤仅建立入口骨架（预检 + 健康检查 + 命令占位），CLI 框架（argparse 子命令注册 + argcomplete 补全）在 REQ-F-01 完整引入。
 
 ```
 ┌─────────────┐     失败     ┌──────────┐
@@ -215,16 +233,15 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 | 预检失败立即 `sys.exit(1)` | REQ-A-01："不满足时给出明确提示并拒绝启动"；不继续、不降级、不静默 |
 | 健康检查放在预检之后 | 先确认硬件够，再尝试连接服务，避免资源不足时浪费等待时间 |
 | 用 Rich 输出报告 | REQ-F-01 要求"输出格式对终端友好"，Rich 表格 + 颜色一步到位 |
-| `detect_env_type()` 占位 | 环境识别是 REQ-B-01 内容，此处只留接口 |
-| main.py 暂不引入 CLI 框架 | 当前只有启动流程，REQ-F 时再引入 argparse/click |
+| CLI 框架（argparse）在 F-01 引入 | A-01 阶段先建入口骨架，子命令树随 F-01 落地 |
 
 ## 8. 错误处理与依赖管理
 
 ### 8.1 错误处理原则
 
-直接对齐任务书第 325 行"错误处理不能吞"。定义统一错误基类 `GalaxyDiagError(message, hint)`，所有业务错误继承并附带可操作 `hint`。
+直接对齐任务书"错误处理不能吞"。定义统一错误基类 `GalaxyDiagError(message, hint)`，所有业务错误继承并附带可操作 `hint`。
 
-子类：`ConfigError`、`PrecheckError`、`ModelUnavailableError`、`ModelCallError`。
+子类（按模块）：`ConfigError`、`PrecheckError`、`ModelUnavailableError`、`ModelCallError`、`CollectorError`（及 `CollectorPermissionError` / `CollectorPartialError` / `CollectorToolNotFoundError`）、`DiagnoseError`、`FixerError`、`SafetyError`、`WorkflowError`。
 
 | 模块 | 失败场景 | 处理方式 | hint 示例 |
 |------|---------|---------|----------|
@@ -241,14 +258,17 @@ YAML 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_BASE_URL
 ### 8.2 依赖管理
 
 ```txt
-# requirements.txt — 最小依赖集
+# requirements.txt — 核心依赖
 openai>=1.30.0          # OpenAI 兼容 SDK（支持 Ollama/vLLM/llama.cpp）
 httpx>=0.27.0           # 健康检查 HTTP 请求（openai 已依赖，显式声明）
 pyyaml>=6.0             # 配置文件解析
 rich>=13.0.0            # CLI 终端美化输出
+numpy>=1.26.0           # RAG 知识库向量计算（余弦相似度）
 ```
 
-刻意不引入：`psutil`（标准库替代）、`langchain`/`llamaindex`（后续按需）、`click`/`typer`（REQ-F 再引入）、`textual`（后续按需）。
+可选依赖：`argcomplete>=3.0.0`（Shell 补全，未安装时降级为静态补全）。
+
+刻意不引入：`psutil`（标准库替代）、`langchain`/`llamaindex`（直接使用 openai SDK 足够）、`click`/`typer`（argparse 标准库足够）、`faiss-cpu`/`chromadb`（numpy 足够，规模增长时再替换）。
 
 离线打包：所有依赖可通过 `pip download` 预下载为 wheel，U盘/内网传输后 `pip install --no-index --find-links` 离线安装；直接依赖仅 4 个，打包体积小。
 

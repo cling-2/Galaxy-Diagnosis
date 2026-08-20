@@ -14,7 +14,7 @@
 | 网络 | 无公网出站要求；内网可用 |
 | Python | 3.10 及以上 |
 
-> 上表为默认模型（约 8B）的推荐配置。**实际最低要求根据 `config.yaml` 中 `llm.model` 的参数量自动推导**（见 `src/galaxy_diag/config/model_profile.py`）：如 `qwen3:1.7b` → 2核/4GB/1.94GB显存/3.5GB磁盘；`qwen3:8b` → 8核/7.4GB/5.4GB/9.2GB。如需固定某项要求，可在 `config.yaml` 显式配置 `hardware` 段（显式值优先于自动推导）。
+> 上表为推荐模型 `qwen3:8b` 的配置。`config.yaml` 默认配置为 `qwen3:1.7b`（轻量验证用），**实际最低要求根据 `config.yaml` 中 `llm.model` 的参数量自动推导**（见 `src/galaxy_diag/config/model_profile.py`）：如 `qwen3:1.7b` → 2核/4GB内存/1.94GB显存/3.5GB磁盘；`qwen3:8b` → 8核/7.4GB/5.4GB/9.2GB。如需固定某项要求，可在 `config.yaml` 显式配置 `hardware` 段（显式值优先于自动推导）。
 
 ### 客户机需预装的系统依赖
 
@@ -113,33 +113,7 @@ galaxy-diag
 
 > 启动时自动执行硬件资源预检（REQ-A-01 验收标准 6）：检测 CPU 核数、内存、磁盘、GPU 显存是否满足最低要求，不满足时打印差距表并**拒绝启动**。需要绕过时用 `galaxy-diag --skip-precheck`（调试用）。
 
-预期输出：
-
-```
-Galaxy-Diag — 银河平台部署问题定位工具
-
-📂 加载配置...
-  推理服务: http://localhost:11434/v1
-  模型: qwen3:8b
-
-🔍 硬件资源预检
-┌──────────┬──────────┬──────────┬──────┐
-│ 项目     │ 最低要求 │ 实际     │ 状态 │
-├──────────┼──────────┼──────────┼──────┤
-│ CPU 核数 │ 4 核     │ 4 核     │ ✅   │
-│ 内存     │ 8.0 GB   │ 14.2 GB  │ ✅   │
-│ 磁盘     │ 10.0 GB  │ 35.6 GB  │ ✅   │
-│ GPU 显存 │ 6.0 GB   │ 0.0 GB   │ ✅   │
-└──────────┴──────────┴──────────┴──────┘
-  GPU 显存: 未检测到 GPU，将以 CPU 模式运行（推理速度较慢）
-
-  硬件预检通过
-
-🔍 推理服务健康检查
-  推理服务就绪，模型: qwen3:8b
-
-✅ 系统就绪  模型: qwen3:8b  |  服务: http://localhost:11434/v1
-```
+> 模型名与最低硬件要求随 `config.yaml` 中 `llm.model` 变化（见上方自动推导说明），此处不固定示例输出。
 
 ### Step 4：重启验证
 
@@ -235,13 +209,14 @@ ollama list   # 应显示 nomic-embed-text
 ### 3. 配置启用
 
 ```bash
-# 修改 config.yaml，指定 embedding 模型名（留空则禁用 RAG，诊断不走知识库检索）
-# llm.embed_model: "nomic-embed-text"
+# config.yaml 中 llm.embed_model 指定 embedding 模型名（留空则禁用 RAG，诊断不走知识库检索）
+# 默认值为 "bge:large"（需按上一节步骤部署该模型）；可改为 nomic-embed-text 等其他已导入模型
+# llm.embed_model: "bge:large"
 # 或通过环境变量覆盖：
 # export GALAXY_LLM_EMBED_MODEL="nomic-embed-text"
 ```
 
-`config.yaml` 中 `llm.embed_model` 为空字符串时，RAG 自动禁用（`diagnose` 内跳过 `retrieve_similar`，不调用 embed），诊断走纯规则 + LLM 路径。
+> `config.yaml` 默认 `embed_model: "bge:large"`（启用 RAG）。若未部署 embedding 模型，将其改为空字符串以禁用 RAG——`diagnose` 内会跳过 `retrieve_similar`、不调用 embed，诊断走纯规则 + LLM 路径。embedding 模型名必须与上一节 `ollama create` 导入的模型名一致。
 
 ### 4. 导入客户故障案例（客户机本地操作，无需联网）
 

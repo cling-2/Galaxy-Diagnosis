@@ -8,7 +8,9 @@
 
 **环境识别 → 信息采集 → 根因分析 → 修复建议 → 人工确认 → 执行 → 验证**
 
-技术栈：Python + LangChain + Ollama（OpenAI 兼容 API）
+技术栈：Python 3.10+ + openai SDK + Ollama（OpenAI 兼容 API）+ Rich（终端输出）+ numpy（RAG 向量计算）
+
+> 任务书实现指引曾建议 LangChain，本实现为保持离线轻量改用 openai SDK 直接调用 OpenAI 兼容 API（功能等价、依赖更少），符合约束 8.4"框架不限定"。
 
 ## 2. 核心模块矩阵
 
@@ -23,107 +25,116 @@
 | 7 | 知识库与可观测（选做） | `knowledge/` + `trace/` | X-02/X-04 | 客户案例库导入与语义检索、推理链路 trace 持久化 |
 
 贯穿性关注点：
-- **配置与离线介质管理**（`config/`）：base_url / model / 路径不可硬编码
-- **领域知识资产**（`shared/constants.py`）：组件清单、关键日志路径、故障案例库
-- **持久化**：工作流状态、审计日志 JSONL、快照、trace
+- **配置与硬件推导**（`config/`）：base_url / model / embed_model / 路径不可硬编码；硬件要求按模型参数量自动推导
+- **领域知识资产**（`shared/constants.py`）：银河平台组件清单、关键日志路径、各类标签映射
+- **持久化约定**：统一 `~/.galaxy-diag/` 下 sessions / audit / snapshots / knowledge_base / traces，可经环境变量覆盖
 
 ## 3. 推荐目录结构
 
 ```
 galaxy-diag/
 ├── bin/                          # 入口脚本
-│   └── galaxy-diag               # CLI 启动点
+│   └── galaxy-diag               # CLI 启动点（pyproject.toml 注册命令）
 ├── src/
 │   └── galaxy_diag/
 │       ├── __init__.py
-│       ├── config/               # 全局配置 & 离线介质管理
+│       ├── __main__.py           # 支持 python -m galaxy_diag
+│       ├── config/               # 全局配置 & 硬件要求推导
 │       │   ├── __init__.py
-│       │   ├── settings.py       # base_url / model / 路径等（环境变量 + YAML）
-│       │   ├── defaults.py       # 默认值 & 最低硬件规格声明
-│       │   └── offline.py        # 离线部署/预检逻辑
+│       │   ├── settings.py       # YAML 加载 → 环境变量覆盖 → 默认值
+│       │   ├── defaults.py       # 配置数据类（LLMConfig, HardwareRequirement, KnowledgeConfig, AppConfig）
+│       │   └── model_profile.py  # 按模型参数量自动推导硬件要求
 │       ├── model/                # [A-01] 模型离线部署与推理
 │       │   ├── __init__.py
-│       │   ├── client.py         # OpenAI 兼容 API 客户端封装（所有 LLM 调用唯一出口）
-│       │   ├── health.py         # 推理服务健康检查
-│       │   └── precheck.py       # 硬件资源预检（CPU/GPU/MEM/DISK）
+│       │   ├── client.py         # ModelAdapter：OpenAI 兼容 API 客户端（所有 LLM/embed 调用唯一出口）
+│       │   ├── health.py         # 推理服务健康检查（服务可达→模型存在→推理可用）
+│       │   ├── precheck.py       # 硬件资源预检（CPU/GPU/MEM/DISK，零网络零 LLM）
+│       │   └── mock_client.py    # MockModelAdapter（--mock 测试用，零网络）
 │       ├── collector/            # [B-01/B-02] 环境感知与信息采集
-│       │   ├── __init__.py
-│       │   ├── env_detect.py     # 裸金属/VM/容器 自动识别
-│       │   ├── hardware.py       # CPU/内存/磁盘/RAID/网卡 采集
-│       │   ├── storage.py        # 第三方存储（SAN/NAS/本地）采集
-│       │   └── tools.py          # LangChain Tool 封装（供 Agent 调用）
-│       ├── diagnoser/            # [C-01/C-02/C-03] 诊断分析
-│       │   ├── __init__.py
-│       │   ├── agent.py          # 诊断 Agent（LangChain Agent 定义）
-│       │   ├── prompts.py        # 诊断 Prompt 模板（含不确定性约束）
-│       │   ├── collector.py      # 诊断信息收集编排（主动采集 + 被动接收）
-│       │   └── postprocess.py    # 结论后处理（确认/推测/信息不足 校验）
+│       │   ├── __init__.py       #   collect_env() 编排入口
+│       │   ├── env_detect.py     # 裸金属/VM/容器自动识别 + 容器运行时检测
+│       │   ├── hardware.py       # CPU/内存/磁盘/RAID/网卡采集
+│       │   └── storage.py        # 第三方存储（SAN/NAS/本地）采集
+│       ├── diagnoser/            # [C-01/C-02/C-03] 诊断采集与根因分析
+│       │   ├── __init__.py       #   导出 build_diagnostic_context + diagnose
+│       │   ├── context.py        # 诊断上下文构建（关键词→Tool 定向采集 + 用户补充）
+│       │   ├── tools.py          # 采集工具（组件状态/日志/资源/连通性）
+│       │   ├── rules.py          # 规则匹配快路径 + 预匹配短路
+│       │   ├── hallucination_guard.py  # 反幻觉事实校验（纯规则，零 LLM）
+│       │   ├── prompts.py        # 诊断 Prompt 模板（含防注入包裹 + 不确定性约束）
+│       │   ├── postprocess.py    # LLM 输出解析与降级（format_fallback/error_fallback）
+│       │   └── agent.py          # diagnose() 顶层入口（规则→RAG→LLM→后处理）
 │       ├── fixer/                # [D-01/D-02/D-03] 修复生成
-│       │   ├── __init__.py
-│       │   ├── agent.py          # 修复 Agent
+│       │   ├── __init__.py       #   导出 generate
+│       │   ├── template.py       # 命令模板引擎（占位符渲染 + 可编辑参数/删除/重排）
+│       │   ├── generator.py      # 多步骤脚本生成（bash/python，set -euo pipefail）
+│       │   ├── checker.py        # D-03 多维错误检测（语法/危险/兼容/占位符）
 │       │   ├── prompts.py        # 修复 Prompt 模板
-│       │   ├── template.py       # 命令模板引擎（占位符替换）
-│       │   ├── generator.py      # 多步骤脚本生成
-│       │   └── checker.py        # 多维错误检测（语法/危险/兼容性）
-│       ├── safety/               # [E-01~E-04] 安全可控
-│       │   ├── __init__.py
-│       │   ├── review.py         # 人工审核拦截（stdin [y/N] 专用通道，不经 LLM）
-│       │   ├── danger.py         # 危险操作多维防护（模式库 + 变量展开检测 + 影响评估）
-│       │   ├── patterns.py       # 危险命令模式库（数据定义，非逻辑）
-│       │   ├── snapshot.py       # 操作快照 & 一键回滚
+│       │   ├── postprocess.py    # 修复输出解析与降级
+│       │   └── agent.py          # generate() 顶层入口
+│       ├── safety/               # [E-01~E-04, F-03] 安全可控（全部不经 LLM）
+│       │   ├── __init__.py       #   包导出：execution_guard_check, review_confirm, ...
+│       │   ├── patterns.py       # 危险命令模式库（DangerPattern 数据定义，非逻辑）
+│       │   ├── danger.py         # E-02 执行前熔断（正则+变量展开检测+影响评估）
+│       │   ├── review.py         # E-01/F-03 审核确认判定（stdin [y/N]，不经 LLM）
+│       │   ├── snapshot.py       # E-03 操作快照 & 一键回滚
 │       │   ├── executor.py       # 受控执行器（逐步执行 + 失败即停 + 超时控制）
-│       │   └── audit.py          # 审计日志（JSONL，专用函数写入，不经 Agent 输出流）
+│       │   ├── verifier.py       # 结果验证
+│       │   └── audit.py          # E-04 审计日志（JSONL，专用函数写入，不经 Agent 输出流）
 │       ├── workflow/             # [F-01/F-02/F-03] 工作流编排与 CLI
 │       │   ├── __init__.py
-│       │   ├── engine.py         # 端到端状态机（收集→识别→分析→修复→审核→执行→验证）
-│       │   ├── states.py         # 状态定义 & 转换规则
-│       │   ├── persist.py        # 工作流状态持久化（中断恢复）
-│       │   └── cli/              # CLI/TUI 子包
+│       │   ├── states.py         # 10 态状态机 + 7 步用户视图映射 + 转换规则
+│       │   ├── persist.py        # 工作流状态持久化与恢复
+│       │   ├── engine.py         # WorkflowEngine 主编排
+│       │   └── cli/              # CLI 子包
 │       │       ├── __init__.py
-│       │       ├── app.py        # CLI 主入口 & 命令注册
-│       │       ├── interact.py   # 交互式参数输入（编辑修复参数）
-│       │       ├── review_ui.py  # 审核确认交互流程（y/N / CONFIRM <摘要>）
-│       │       └── display.py    # Rich 输出（表格/颜色/格式化）
-│       ├── knowledge/            # [X-02 选做] 客户知识库
-│       │   ├── __init__.py
-│       │   ├── loader.py         # 案例导入（Markdown/文本分块）
-│       │   ├── store.py          # 向量存储 + 语义检索（离线可用）
-│       │   └── manager.py        # 知识库管理命令（导入/列表/删除）
+│       │       ├── app.py        # CLI 主入口 & 命令注册（argparse + argcomplete）
+│       │       ├── interact.py   # 交互式参数输入（编辑修复参数、CONFIRM 确认）
+│       │       ├── review_ui.py  # 审核交互界面（渲染摘要 + 收集选择）
+│       │       ├── display.py    # Rich 输出（Table/Panel/Markdown）
+│       │       ├── cmd_run.py    # run 命令
+│       │       ├── cmd_env.py    # env 命令
+│       │       ├── cmd_diagnose.py  # diagnose 命令
+│       │       ├── cmd_fix.py    # fix 命令
+│       │       ├── cmd_review.py # review 命令
+│       │       ├── cmd_snapshot.py  # snapshot 命令（list/show/rollback）
+│       │       ├── cmd_audit_log.py # audit-log 命令
+│       │       ├── cmd_kb.py     # kb 命令（import/list/delete/reindex）
+│       │       └── cmd_completion.py  # completion 命令
+│       ├── knowledge/            # [X-02 选做] RAG 客户知识库
+│       │   ├── __init__.py       #   导出 retrieve_similar + KnowledgeStore
+│       │   ├── types.py          # KnowledgeCase / RetrievalResult
+│       │   ├── store.py          # 向量存储（numpy 落盘：index.json + vectors.npy）
+│       │   ├── indexer.py        # 导入与索引（frontmatter 解析 + 增量 embedding）
+│       │   └── retriever.py      # 语义检索（余弦 top-k + 环境过滤 + 阈值过滤）
 │       ├── trace/                # [X-04 选做] 推理可观测
-│       │   ├── __init__.py
-│       │   ├── recorder.py       # 推理链路记录（每步操作追加 trace 日志）
-│       │   └── viewer.py         # trace 回放与查询
+│       │   ├── __init__.py       #   导出 TraceRecorder + get_recorder
+│       │   └── recorder.py       # TraceRecorder（contextvars + Span 栈 + JSONL 追加写入）
 │       └── shared/               # 横切共享
 │           ├── __init__.py
-│           ├── types.py          # 公共类型定义（EnvironmentType, DiagnosisResult 等）
-│           ├── constants.py      # 银河平台组件清单、关键日志路径等领域知识
-│           ├── errors.py         # 统一异常体系
-│           └── utils.py          # 通用工具函数
-├── data/                         # 静态数据资产
-│   ├── knowledge/                # 故障案例库（预置）
-│   ├── danger_patterns/          # 危险命令模式库（预置）
-│   └── prompts/                  # Prompt 模板文件（如需外置 YAML）
+│           ├── types.py          # 全部 dataclass/enum 数据契约（EnvironmentType, DiagnosisResult 等）
+│           ├── constants.py      # 银河平台组件清单、关键日志路径、中文标签等领域知识
+│           └── errors.py         # 统一异常体系（GalaxyDiagError + 子类）
 ├── tests/                        # 测试
-│   ├── unit/
+│   ├── unit/                     # 单元测试
 │   │   ├── test_collector/
 │   │   ├── test_diagnoser/
 │   │   ├── test_fixer/
-│   │   ├── test_safety/
-│   │   └── test_workflow/
-│   ├── integration/
-│   └── e2e/                      # 端到端场景测试（容器网络不通 / VM 磁盘未识别）
-├── deploy/                       # 部署相关
-│   ├── Dockerfile                # 预打包镜像（含模型 + 运行时）
-│   ├── docker-compose.yml
-│   ├── install.sh                # 离线安装脚本
-│   └── model-import.sh           # 模型离线导入脚本
-├── docs/                         # 文档
-│   ├── deployment.md             # 离线部署步骤 & 最低硬件要求
-│   ├── usage.md                  # CLI 命令参考 & 典型流程
-│   └── api.md                    # API 文档
-├── pyproject.toml
-├── README.md
-└── .env.example                  # 环境变量示例（base_url / model 等）
+│   │   ├── test_workflow/
+│   │   └── test_workflow_cli/
+│   ├── test_*.py                 # 集成/功能测试（顶层）
+│   └── conftest.py               # 公共 fixture
+├── deploy/                       # 离线部署
+│   ├── Dockerfile                # Linux 平台 wheel 下载容器
+│   ├── prepare_offline.sh        # 有网机器：下载 Ollama + 模型 GGUF + Python wheels
+│   ├── install_offline.sh        # 断网机器：一键安装 + 导入模型 + 创建 venv
+│   ├── Modelfile                 # Ollama 模型定义文件（离线导入参考）
+│   └── offline/                  # 离线介质存放目录（不入库）
+├── docs/                         # 设计文档
+├── pyproject.toml                # 包定义与入口（galaxy-diag = galaxy_diag.workflow.cli.app:main）
+├── config.yaml                   # 默认配置（零外网地址，model=qwen3:1.7b）
+├── requirements.txt              # Python 依赖（openai/httpx/pyyaml/rich/numpy）
+└── README.md
 ```
 
 ### 组织原则
@@ -284,24 +295,29 @@ class SnapshotMeta:
 @dataclass
 class AuditRecord:
     """审计日志记录"""
-    timestamp: datetime
+    timestamp: datetime | None = None
     session_id: str
     operator: str
     action: str
-    result: Literal["success", "failure", "rollback", "rejected"]
+    result: Literal["confirmed", "success", "failure", "rollback", "rejected", "verify_failed"]
     llm_basis: str              # LLM 分析依据摘要
     snapshot_id: str | None     # 关联的快照 ID
-    user_input: str             # 用户确认输入（y / N / CONFIRM xxx）
+    user_input: str             # 用户确认输入（y / n / CONFIRM）
 
 # ===== 工作流 =====
 
 class WorkflowStep(str, Enum):
-    COLLECT = "collect"
-    DIAGNOSE = "diagnose"
-    FIX = "fix"
-    REVIEW = "review"
-    EXECUTE = "execute"
-    VERIFY = "verify"
+    """工作流内部状态机（10 态），映射到 7 个用户可见步骤"""
+    ENV_RECOGNISING = "env_recognising"       # 步骤1 环境识别
+    COLLECTING = "collecting"                 # 步骤2 信息采集
+    DIAGNOSING = "diagnosing"                 # 步骤3 根因分析
+    PLANNING = "planning"                     # 步骤4 修复建议
+    SECURITY_CHECKING = "security_checking"   # 步骤4 D-03 生成后检测
+    EXECUTION_GUARD = "execution_guard"       # 步骤5 E-02 执行前熔断
+    REVIEWING = "reviewing"                   # 步骤5 人工审核
+    SNAPSHOT = "snapshot"                     # 步骤6 创建快照
+    EXECUTING = "executing"                   # 步骤6 执行修复
+    VERIFYING = "verifying"                   # 步骤7 结果验证
 
 @dataclass
 class WorkflowState:
@@ -353,7 +369,7 @@ class WorkflowState:
 | 安全关卡 | 实现方式 | 绕过防护 |
 |---------|---------|---------|
 | 危险命令拦截 | `safety/danger.py` 正则+变量展开检测匹配 `patterns.py` 中的模式 | 不可能——在 Agent 输出后、用户确认前硬编码拦截 |
-| 人工确认 | `safety/review.py` 读 stdin 的 `[y/N]`，不经过 LangChain 的任何回调 | 不可能——stdin 输入不经过 LLM |
+| 人工确认 | `safety/review.py` 读 stdin 的 `[y/N]`，不经过 LLM 调用通道 | 不可能——stdin 输入不经过 LLM |
 | 二次确认 | 危险操作要求输入 `CONFIRM <操作摘要>`，摘要由硬编码逻辑生成 | 不可能——Prompt 注入无法控制 stdin |
 | 审计日志 | `safety/audit.py` 用 `json.dumps().write()` 直接写文件 | 不可能——Agent 没有修改审计日志的 Tool |
 | 快照回滚 | `safety/snapshot.py` 备份文件到 `.bak/`，回滚命令从备份恢复 | 回滚本身也需经 review.py 确认 |
@@ -441,85 +457,73 @@ collect ──→ diagnose ──→ fix ──→ review ──→ execute ─�
 ### 8.1 配置加载优先级
 
 ```
-环境变量 → .env 文件 → config.yaml → config/defaults.py
+config.yaml（显式 config_path 或 GALAXY_CONFIG_FILE 环境变量指定）→ 环境变量覆盖（前缀 GALAXY_）→ config/defaults.py 数据类默认值
 ```
+
+硬件要求额外规则：显式 `hardware:` 段字段优先于按 `llm.model` 参数量自动推导的值（`config/model_profile.py`），未配置的字段回退到自动推导。
 
 ### 8.2 关键配置项
 
 ```yaml
 # config.yaml
-model:
+llm:
   base_url: "http://localhost:11434/v1"  # 可配置，不硬编码
-  model_name: "qwen3.5:7b"               # 可配置
-  timeout: 60
+  model: "qwen3:1.7b"                    # 可配置；生产建议 qwen3:8b
+  api_key: "ollama"                      # Ollama 不验证 key，SDK 要求非空
+  timeout: 600                           # 纯 CPU 推理 8B 需 3-5 分钟
   max_retries: 3
+  max_tokens: 1024
+  embed_model: "bge:large"               # RAG embedding 模型；空字符串=禁用 RAG
 
-runtime:
-  data_dir: "~/.galaxy-diag"
-  log_level: "INFO"
-  audit_log: "~/.galaxy-diag/audit.jsonl"
-  snapshot_dir: "~/.galaxy-diag/snapshots"
+# hardware 段默认根据 llm.model 参数量自动推导；如需手动覆盖某项取消注释
+# hardware:
+#   min_cpu_cores: 4
+#   min_ram_gb: 3.0
+#   min_gpu_vram_gb: 6.0
+#   min_disk_gb: 10.0
+#   gpu_required: false
 
-hardware:
-  min_cpu_cores: 4
-  min_memory_gb: 8
-  min_disk_gb: 20
-  gpu_required: false
-  min_gpu_vram_gb: 4
+knowledge:                               # RAG 检索配置（REQ-X-02）
+  top_k: 3                               # 检索返回最大案例数
+  min_similarity: 0.0                    # 最低余弦相似度阈值，0.0=不过滤
 ```
+
+> 运行时持久化路径（sessions / audit / snapshots / knowledge_base / traces）统一约定为 `~/.galaxy-diag/`，可通过环境变量覆盖（`GALAXY_SESSION_DIR` / `GALAXY_KB_DIR` 等），不在 config.yaml 中集中配置。
 
 ### 8.3 离线部署流程
 
 ```
 [有网环境]                          [断网客户环境]
    │                                    │
-   ├─ 下载模型 GGUF 文件                │
-   ├─ 下载 Python 依赖 whl 包          │
-   ├─ 打包为离线安装介质                │
-   │  (Docker 镜像 / tar.gz)            │
+   ├─ prepare_offline.sh                │
+   │   下载 Ollama .tar.zst             │
+   │   下载模型 GGUF                    │
+   │   Docker 容器下载 Linux wheels     │
    │                                    │
    └──── U盘/内网传输 ────────→         │
-                                        ├─ install.sh 安装
-                                        ├─ model-import.sh 导入模型到 Ollama
+                                        ├─ install_offline.sh 安装（创建 venv）
+                                        ├─ Modelfile + ollama create 导入模型
                                         ├─ 资源预检 (precheck.py)
                                         └─ 启动 galaxy-diag
 ```
 
 ## 9. 模型客户端设计
 
-`model/client.py` 是所有 LLM 调用的唯一出口：
+`model/client.py` 中的 `ModelAdapter` 是所有 LLM 调用的唯一出口，基于 `LLMConfig` 构造，内部包装 `openai.OpenAI` 客户端。核心方法：
 
-```python
-# model/client.py 核心接口（示意）
+- `chat(messages, tools=None, timeout=None, max_tokens=None) -> str | None` — 同步对话，返回助手回复文本（含 `tool_calls` 时通过 `ToolCall` dataclass 返回）；失败抛 `ModelCallError`
+- `embed(texts, model=None) -> list[list[float]]` — 批量文本向量化，供 RAG 检索使用（`embed_model` 为空时抛 `ModelCallError`）
+- `check_health()` — 委托 `ModelHealthChecker` 做三阶段健康检查
 
-class ModelClient:
-    """OpenAI 兼容 API 客户端，所有 LLM 调用唯一出口"""
-
-    def __init__(self, settings: Settings):
-        self._client = OpenAI(
-            base_url=settings.model_base_url,
-            api_key=settings.model_api_key or "not-needed",
-        )
-        self._model = settings.model_name
-        self._timeout = settings.model_timeout
-
-    def chat(self, messages: list[dict], tools: list | None = None) -> ChatCompletion:
-        """统一聊天接口，自动加日志/超时/重试"""
-        ...
-
-    def health_check(self) -> bool:
-        """推理服务健康检查"""
-        ...
-```
+另有 `MockModelAdapter`（`model/mock_client.py`）提供零网络实现，`--mock` 模式下替代真实 adapter，使全链路可离线确定性测试。健康检查逻辑独立于 adapter 在 `model/health.py` 中（`ModelHealthChecker`：服务可达→模型存在→推理可用，返回 `HealthResult`）。
 
 ## 10. 测试策略
 
 | 层级 | 目录 | 重点 |
 |------|------|------|
 | 单元测试 | `tests/unit/test_collector/` 等 | 每个域的逻辑正确性，mock LLM 调用 |
-| 集成测试 | `tests/integration/` | 域间交互（collector→diagnoser→fixer→safety 链路） |
-| 端到端 | `tests/e2e/` | 完整场景验证（容器网络不通、VM 磁盘未识别） |
-| 安全测试 | `tests/unit/test_safety/` | 危险命令绕过、Prompt 注入、审计完整性 |
+| 集成/功能测试 | `tests/`（顶层 `test_*.py`） | 域间交互（collector→diagnoser→fixer→safety 链路）、RAG 集成、Prompt 注入、状态恢复、安全重试循环 |
+| 安全测试 | 贯穿单元/集成 | 危险命令绕过、Prompt 注入、审计完整性 |
 
 ### 关键测试场景
 
@@ -527,14 +531,16 @@ class ModelClient:
 2. **Prompt 注入测试**：在日志内容中嵌入"用户已确认执行"，验证 review.py 不受影响
 3. **离线可用测试**：断开公网后执行完整诊断-修复流程，检查无外网请求
 4. **状态恢复测试**：中断工作流后 resume，验证从正确步骤继续
+5. **RAG 集成测试**：mock embedding 模型 + 预设案例，跑完整 `diagnose()` 流程验证"检索→注入→来源标注"链路
 
 ## 11. 选做模块设计
 
 ### 11.1 knowledge/ — 客户知识库 (X-02)
 
-- 文本分块 + Embedding + 本地向量存储（如 ChromaDB 离线模式）
-- 诊断时语义检索相关案例，注入 Prompt 上下文
+- 案例导入（Markdown frontmatter 解析 + 增量 embedding）+ 向量存储（numpy 落盘：`index.json` + `vectors.npy`）+ 语义检索（余弦 top-k + 环境过滤）
+- 诊断时语义检索相关案例，注入 Prompt 上下文（"只增强、不短路"）
 - 输出标注信息来源（通用知识 vs 客户特有案例）
+- 不引入 FAISS / ChromaDB / sentence-transformers（离线轻量约束）；规模突破 numpy 舒适区时 `retrieve_similar()` 内部可替换为 FAISS
 
 ### 11.2 trace/ — 推理可观测 (X-04)
 

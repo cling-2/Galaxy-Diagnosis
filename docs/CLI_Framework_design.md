@@ -69,9 +69,10 @@ workflow/cli/ ←── 严禁被 workflow/ 外层反向依赖
 galaxy-diag [全局选项] <子命令> [子命令选项]
 
 全局选项:
-  --config PATH       配置文件路径 (默认: config.yaml)
+  --config PATH       配置文件路径 (默认: config.yaml 或 GALAXY_CONFIG_FILE)
   --verbose           详细输出模式
   --no-color          禁用颜色输出 (等同 NO_COLOR=1)
+  --skip-precheck     跳过硬件资源预检（调试用）
   --version           显示版本号
 
 子命令:
@@ -83,6 +84,8 @@ galaxy-diag [全局选项] <子命令> [子命令选项]
   audit-log           审计日志查询 (REQ-E-04)
   run                 端到端工作流 (REQ-F-02)
   completion          生成 Shell 补全脚本
+  kb                  客户知识库管理 (REQ-X-02: import/list/delete/reindex)
+  trace               查看诊断任务推理链路 (REQ-X-04)
 ```
 
 ### 3.2 各子命令参数签名
@@ -240,6 +243,35 @@ eval "$(galaxy-diag completion bash)"
 # 或持久化：
 galaxy-diag completion bash > /etc/bash_completion.d/galaxy-diag
 ```
+
+#### `galaxy-diag kb`
+
+```
+galaxy-diag kb <动作> [选项]
+
+动作:
+  import <file>       导入客户故障案例文件（Markdown/纯文本）
+  list                列出已导入案例
+  delete <case_id>    删除指定案例
+  reindex             重新索引全部案例（embedding 模型更换后使用）
+
+选项:
+  --mock              Mock 模式：使用预设 embedding，不连接真实 Ollama（import/reindex 可用）
+```
+
+> `kb import` / `kb reindex` 触发 embedding 模型预检；`kb list` / `kb delete` 为纯本地操作。详见 `RAG_Knowledge_Base_design.md`。
+
+#### `galaxy-diag trace`
+
+```
+galaxy-diag trace <session_id> [选项]
+
+选项:
+  --step STEP         按步骤过滤（如 DIAGNOSING）
+  --verbose           显示完整 completion / output_summary
+```
+
+> 查看指定诊断任务的推理链路记录。详见 `Trace_design.md`。
 
 ### 3.3 子命令注册机制
 
@@ -597,17 +629,18 @@ galaxy-diag = "galaxy_diag.workflow.cli.app:main"
 
 ## 9. 与现有代码的关系
 
-当前 `main.py`（顶层入口）包含启动流程：配置加载 → 硬件预检 → 健康检查。重构为 CLI 框架后：
+入口流程已落地于 `workflow/cli/app.py:main()`：全局参数解析 →（按命令触发）硬件预检 → 模型健康检查 → 命令分发。各子命令模块在 `workflow/cli/cmd_*.py` 中实现 `register(subparsers)` + `handle(args)`。
 
-| 现有代码 | 迁移去向 | 说明 |
+| 职责 | 落地位置 | 说明 |
 |---------|---------|------|
-| `main.py` 启动流程 | `workflow/cli/cmd_run.py` 的 `handle()` 中 | 作为 `galaxy-diag run` 的前置检查 |
-| `config/` | `src/galaxy_diag/config/` | 路径变更，逻辑不变 |
-| `model/` | `src/galaxy_diag/model/` | 路径变更，逻辑不变 |
-| `precheck/` | `src/galaxy_diag/model/precheck.py` | 归入模型模块（硬件预检是模型运行的前提） |
-| `errors.py` | `src/galaxy_diag/shared/errors.py` | 归入 shared 层 |
+| 启动流程（配置加载 → 预检 → 健康检查） | `workflow/cli/app.py:main()` | 全局共享，需预检的命令（run/diagnose）触发，其余跳过 |
+| 命令注册表 | `app.py:_COMMANDS` | 10 个子命令动态注册 |
+| 各命令实现 | `workflow/cli/cmd_*.py` | `register()` + `handle()` 模式 |
+| 配置层 | `src/galaxy_diag/config/` | `settings.py` 加载 / `defaults.py` 数据类 / `model_profile.py` 硬件推导 |
+| 模型层 | `src/galaxy_diag/model/` | `client.py` ModelAdapter / `health.py` / `precheck.py` / `mock_client.py` |
+| 错误体系 | `src/galaxy_diag/shared/errors.py` | 统一异常基类 + 子类 |
 
-> 迁移在实现阶段逐步进行，设计文档以新架构为准。
+> 设计文档以已落地的新架构为准。
 
 ## 10. 错误处理策略
 

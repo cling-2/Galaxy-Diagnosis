@@ -21,7 +21,7 @@
 | 编号 | 模块 | 描述 |
 |------|------|------|
 | REQ-A-01 | 模型离线部署与运行 | 小参量模型离线部署、启动前硬件预检、推理服务健康检查 |
-| REQ-B-01 | 运行环境类型自动识别 | 自动识别VM、容器三种环境，据此选择诊断路径 |
+| REQ-B-01 | 运行环境类型自动识别 | 自动识别裸金属、VM、容器三种环境，据此选择诊断路径 |
 | REQ-B-02 | 异构软硬件信息采集 | 采集 CPU/内存/磁盘/RAID/网卡/第三方存储等信息，结构化输出 |
 | REQ-C-01 | 问题诊断信息收集 | 支持主动采集 + 用户描述两种输入，形成结构化诊断上下文 |
 | REQ-C-02 | 多环境根因分析 | 基于诊断信息与环境类型进行根因分析，覆盖裸金属/VM/容器 |
@@ -81,14 +81,18 @@
 |------|------|------|
 | 编程语言 | Python 3.10+ | 任务书推荐，Agent/CLI 生态丰富 |
 | 推理服务 | Ollama | OpenAI 兼容 API，`ollama create` 支持离线导入 |
-| 本地模型 | qwen3:8b（Q4_K_M 量化） | 纯 CPU 可推理，中文能力强，落在任务书"3~9B 级"范围内 |
+| 本地模型 | qwen3 系列（推荐 8B，默认配置 1.7b） | 纯 CPU 可推理，中文能力强；`config.yaml` 中 `llm.model` 可配置，默认 `qwen3:1.7b` 便于轻量环境验证，生产建议 `qwen3:8b`（Q4_K_M），落在任务书"3~9B 级"范围内 |
 | LLM SDK | openai (Python) | 兼容 Ollama/vLLM/llama.cpp，换后端仅改 `base_url` |
-| CLI 输出 | Rich | 终端表格、颜色、进度条 |
+| 向量计算 | numpy | RAG 知识库余弦相似度检索，纯 Python 离线可运行 |
+| CLI 输出 | Rich | 终端表格、颜色、Panel |
+| 命令补全 | argcomplete（可选） | bash/zsh/fish 补全，未安装时降级为静态补全 |
 | 配置格式 | YAML | 可读性强，支持注释，运维人员友好 |
+
+> 任务书实现指引曾建议 LangChain / Prompt Toolkit，本实现为保持离线轻量改用 openai SDK + argcomplete（功能等价、依赖更少），符合约束 8.4"框架不限定"。
 
 ## 目标环境
 
-典型 KVM 虚拟化环境：
+典型 KVM 虚拟化环境（按 `qwen3:8b` 推导）：
 
 - **CPU**：4 核
 - **内存**：16 GB
@@ -98,7 +102,9 @@
 
 ### 最低硬件配置
 
-| 资源 | 最低要求 | 说明 |
+> 最低要求根据 `config.yaml` 中 `llm.model` 的参数量**自动推导**（见 `src/galaxy_diag/config/model_profile.py`）。下表为推荐模型 `qwen3:8b` 的配置；切换为更小模型（如默认 `qwen3:1.7b` → 2核/4GB）时要求相应降低。
+
+| 资源 | qwen3:8b 最低要求 | 说明 |
 |------|---------|------|
 | CPU | 4 核 | 纯 CPU 推理基本要求 |
 | 内存 | 8 GB | qwen3:8b Q4_K_M 运行时约 6 GB |
@@ -109,32 +115,76 @@
 
 ```
 galaxy-diag/
-├── bin/galaxy-diag              # CLI 入口脚本
+├── bin/galaxy-diag              # CLI 入口脚本（pyproject.toml 注册 galaxy-diag 命令）
 ├── src/galaxy_diag/             # 源码包（src layout）
 │   ├── config/                  #   [配置] 配置加载与数据类
-│   │   ├── settings.py          #     YAML 加载 → 环境变量覆盖 → 校验
-│   │   └── defaults.py          #     配置数据类（LLMConfig, HardwareRequirement, AppConfig）
+│   │   ├── settings.py          #     YAML 加载 → 环境变量覆盖 → 默认值
+│   │   ├── defaults.py          #     配置数据类（LLMConfig, HardwareRequirement, KnowledgeConfig, AppConfig）
+│   │   └── model_profile.py     #     按模型参数量自动推导硬件要求
 │   ├── model/                   #   [A-01] 模型离线部署与推理
-│   │   ├── client.py            #     ModelAdapter：统一 LLM 调用入口（OpenAI 兼容）
-│   │   ├── health.py            #     推理服务健康检查
-│   │   └── precheck.py          #     硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
-│   ├── shared/
-│   │   └── errors.py            #     统一异常体系
-│   └── __main__.py              #   CLI 主入口
+│   │   ├── client.py            #     ModelAdapter：统一 LLM 调用入口（OpenAI 兼容，含 embed）
+│   │   ├── health.py            #     推理服务健康检查（服务可达→模型存在→推理可用）
+│   │   ├── precheck.py          #     硬件资源预检（GPU/VRAM, CPU, RAM, Disk）
+│   │   └── mock_client.py       #     MockModelAdapter（--mock 测试用，零网络）
+│   ├── collector/               #   [B-01/B-02] 环境感知与异构硬件采集
+│   │   ├── env_detect.py        #     裸金属/VM/容器识别 + 容器运行时检测
+│   │   ├── hardware.py          #     CPU/内存/磁盘/RAID/网卡采集
+│   │   └── storage.py           #     SAN/NAS/本地存储采集
+│   ├── diagnoser/               #   [C-01/C-02/C-03] 诊断采集与根因分析
+│   │   ├── context.py           #     诊断上下文构建（关键词→Tool 定向采集）
+│   │   ├── tools.py             #     采集工具（组件状态/日志/资源/连通性）
+│   │   ├── rules.py             #     规则匹配快路径 + 预匹配短路
+│   │   ├── hallucination_guard.py  #  反幻觉事实校验（纯规则，零 LLM）
+│   │   ├── prompts.py           #     诊断 Prompt 构建（防注入包裹）
+│   │   ├── postprocess.py       #     LLM 输出解析与降级
+│   │   └── agent.py             #     diagnose() 顶层入口
+│   ├── fixer/                   #   [D-01/D-02/D-03] 修复建议生成
+│   │   ├── template.py          #     占位符模板引擎（可编辑参数/删除/重排）
+│   │   ├── generator.py         #     多步骤脚本生成（bash/python，set -euo pipefail）
+│   │   ├── checker.py           #     D-03 多维错误检测（语法/危险/兼容/占位符）
+│   │   ├── prompts.py           #     修复 Prompt 构建
+│   │   ├── postprocess.py       #     修复输出解析与降级
+│   │   └── agent.py             #     generate() 顶层入口
+│   ├── safety/                  #   [E-01~E-04, F-03] 安全可控（全部不经 LLM）
+│   │   ├── patterns.py          #     危险命令模式库（数据层）
+│   │   ├── danger.py            #     E-02 执行前熔断（正则+变量展开+影响评估）
+│   │   ├── review.py            #     E-01/F-03 审核确认判定
+│   │   ├── snapshot.py          #     E-03 快照与回滚
+│   │   ├── executor.py          #     受控执行（逐步执行，失败即停）
+│   │   ├── verifier.py          #     结果验证
+│   │   └── audit.py             #     E-04 审计日志（JSONL，不经 Agent 流）
+│   ├── knowledge/               #   [X-02 选做] RAG 客户知识库
+│   │   ├── types.py             #     KnowledgeCase/RetrievalResult
+│   │   ├── store.py             #     向量存储（numpy 落盘）
+│   │   ├── indexer.py           #     导入与索引（frontmatter 解析）
+│   │   └── retriever.py         #     语义检索（余弦 top-k）
+│   ├── trace/                   #   [X-04 选做] 推理可观测
+│   │   └── recorder.py          #     TraceRecorder（JSONL 追加写入）
+│   ├── shared/                  #   跨域契约层
+│   │   ├── types.py             #     全部 dataclass/enum 数据契约
+│   │   ├── errors.py            #     统一异常体系
+│   │   └── constants.py         #     领域常量（组件名/日志路径/标签）
+│   ├── workflow/                #   [F-01/F-02] CLI 与工作流编排
+│   │   ├── states.py            #     10 态状态机 + 7 步用户视图映射
+│   │   ├── persist.py           #     会话持久化与恢复
+│   │   ├── engine.py            #     WorkflowEngine 主编排
+│   │   └── cli/                 #     CLI 子包（app.py 入口 + cmd_*.py 各命令）
+│   └── __main__.py              #   支持 python -m galaxy_diag
 ├── deploy/                      # 离线部署工具
 │   ├── prepare_offline.sh       #   有网机器上下载离线介质
 │   ├── install_offline.sh       #   断网机器上离线安装依赖
+│   ├── Dockerfile               #   用于下载 Linux 平台 wheel 的容器
 │   ├── Modelfile                #   Ollama 模型定义文件
 │   └── offline/                 #   离线介质（不入库）
-├── docs/                        # 文档
-├── tests/                       # 测试
+├── docs/                        # 设计文档
+├── tests/                       # 测试（单元 + 集成）
 ├── config.yaml                  # 默认配置（零外网地址）
 ├── pyproject.toml               # 包定义与入口
 ├── requirements.txt             # Python 依赖
 └── README.md
 ```
 
-> 后续按任务书依赖链增量扩展：环境感知(b-) → 诊断分析(c-) → 修复生成(d-) → 安全可控(e-) → CLI 工作流(f-)
+> 已按任务书依赖链完成全模块增量构建：模型(A) → 环境感知(B) → 诊断分析(C) → 修复生成(D) → 安全可控(E) → CLI 工作流(F)，并落地选做项 RAG 知识库(X-02) 与 Trace 可观测(X-04)。
 
 ## 部署
 
@@ -148,16 +198,34 @@ galaxy-diag/
 
 ```bash
 pip install -r requirements.txt   # 联网环境
-python main.py                    # 启动
+pip install -e .                  # 注册 galaxy-diag 命令
+
+# 端到端诊断（7 步闭环）
+galaxy-diag run -d "问题描述"           # 真实 LLM 推理
+galaxy-diag run -d "问题描述" --mock    # Mock 模式，验证流程闭环（不需 Ollama）
+
+# 单步命令
+galaxy-diag env                        # 环境识别（裸金属/VM/容器 + 硬件）
+galaxy-diag diagnose -d "问题描述"      # 仅诊断到根因，不进入修复
+galaxy-diag snapshot list              # 查看快照
+galaxy-diag audit-log                  # 查看审计日志
+galaxy-diag kb import <file>           # 导入客户知识库案例
+galaxy-diag completion bash            # 生成 shell 补全脚本
+
+# 恢复中断的会话
+galaxy-diag run --resume               # 列出可恢复会话
+galaxy-diag run --resume <session_id>  # 恢复指定会话
 ```
+
+> 全局选项：`--config <path>`、`--verbose`、`--no-color`、`--skip-precheck`、`--version`。`run`/`diagnose` 命令默认触发硬件预检，`--skip-precheck` 可跳过。
 
 离线环境：
 
 ```bash
-# 有网机器：bash deploy/download_wheels.sh
+# 有网机器：bash deploy/prepare_offline.sh
 # 传输 galaxy-diag 到断网机器后：
 bash deploy/install_offline.sh
-python main.py
+galaxy-diag run -d "问题描述"
 ```
 
 ## 设计原则
