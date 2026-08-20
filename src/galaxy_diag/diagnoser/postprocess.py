@@ -141,8 +141,25 @@ def _validate_semantic(data: dict) -> tuple[dict, bool]:
             data["investigation_steps"] = data.get("investigation_steps") or ["建议人工排查"]
             repaired = True
 
-    # INSUFFICIENT: missing_info + investigation_steps 非空
+    # SUSPECTED: 必须给出可执行排查步骤和可能故障范围（推测未确认，用户需据此验证）
+    if conf == "suspected":
+        if not data.get("investigation_steps"):
+            data["investigation_steps"] = ["建议按证据进一步排查验证"]
+            repaired = True
+        if not data.get("fault_scope"):
+            data["fault_scope"] = "故障范围待进一步确认"
+            repaired = True
+
+    # INSUFFICIENT: missing_info + investigation_steps 非空，root_cause 必须为空
+    # （无法定位即无确定根因；LLM 若仍带猜测性根因，移入 missing_info 待证实后清空）
     if conf == "insufficient":
+        if data.get("root_cause"):
+            guess = data["root_cause"]
+            data["root_cause"] = ""
+            data.setdefault("missing_info", [])
+            if guess not in data["missing_info"]:
+                data["missing_info"].append(f"待证实的推测: {guess}")
+            repaired = True
         if not data.get("missing_info"):
             data["missing_info"] = ["未明确指出缺失信息"]
             repaired = True

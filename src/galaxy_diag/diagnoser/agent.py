@@ -60,15 +60,19 @@ def diagnose(
 
     Notes:
         kb_store/knowledge_config 非空且 model_adapter.config.embed_model 已配置时
-        启用 RAG 检索增强；规则命中时不触发 RAG（规则快路径直接返回）。
+        启用 RAG 检索增强；CONFIRMED 规则命中直接短路返回（不触发 LLM/RAG）。
+        SUSPECTED 规则命中不短路，作为 rule_hint 与 RAG 一并注入 LLM 深化。
         embed_model 未配置时不启用 RAG，避免无意义的 embed() 调用。
     """
     # 1. 规则匹配快路径（DIAGNOSING 内）
-    #    注：COLLECTING 末尾已对 CONFIRMED 短路；此处主要处理 SUSPECTED 命中
+    #    仅 CONFIRMED 短路直接返回（高确定性根因，无需 LLM）；
+    #    SUSPECTED 命中不短路，作为提示种子（rule_hint）注入 LLM 深化：
+    #    LLM 据此充实证据、细化排查步骤、修正故障范围（可能确认/修正/降级）。
     rule_result = match_rules(diagnostic_context)
-    if rule_result is not None:
+    if rule_result is not None and rule_result.confidence.value == "confirmed":
         rule_result.diagnosis_source = DiagnosisSource.RULE_MATCH
         return rule_result
+    rule_hint = rule_result  # SUSPECTED 命中或 None
 
     # 2. LLM 推理深路径
     env_type = env_info.env_type
@@ -91,7 +95,7 @@ def diagnose(
 
     try:
         messages = build_diagnosis_messages(
-            problem_description, env_info, diagnostic_context, retrieval_result
+            problem_description, env_info, diagnostic_context, retrieval_result, rule_hint
         )
         raw_response = model_adapter.chat(messages)
         result = parse_diagnosis_response(raw_response, env_type)

@@ -317,7 +317,7 @@ def print_diagnosis(result: DiagnosisResult) -> None:
         )
 
     console.print(Panel(
-        Markdown(result.root_cause or "未得出结论"),
+        Markdown(result.root_cause or "未能确定根因"),
         title=title_text,
         border_style=conf_style,
         padding=(1, 2),

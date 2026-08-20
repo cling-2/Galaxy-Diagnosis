@@ -106,6 +106,49 @@ class TestValidateSemantic:
         result, repaired = _validate_semantic(data)
         assert not repaired
 
+    def test_suspected_without_steps_and_scope_repaired(self):
+        """suspected 必须给出可执行排查步骤和可能故障范围"""
+        data = {
+            "confidence": "suspected",
+            "root_cause": "可能是内存不足",
+            "evidence": ["free -h 显示内存紧张"],
+            "missing_info": [],
+            "investigation_steps": [],
+            "fault_scope": "",
+        }
+        result, repaired = _validate_semantic(data)
+        assert repaired
+        assert len(result["investigation_steps"]) > 0
+        assert result["fault_scope"]
+
+    def test_suspected_with_steps_and_scope_passes(self):
+        """suspected 给全 steps + scope 时不修复"""
+        data = {
+            "confidence": "suspected",
+            "root_cause": "可能是内存不足",
+            "evidence": ["free -h 显示内存紧张"],
+            "missing_info": [],
+            "investigation_steps": ["运行 free -h"],
+            "fault_scope": "资源层：内存",
+        }
+        result, repaired = _validate_semantic(data)
+        assert not repaired
+
+    def test_insufficient_with_root_cause_cleared(self):
+        """insufficient 带 root_cause → 清空并移入 missing_info"""
+        data = {
+            "confidence": "insufficient",
+            "root_cause": "可能是磁盘故障",
+            "evidence": [],
+            "missing_info": ["磁盘 SMART 日志"],
+            "investigation_steps": ["检查 SMART"],
+        }
+        result, repaired = _validate_semantic(data)
+        assert repaired
+        assert result["root_cause"] == ""
+        assert any("可能是磁盘故障" in m for m in result["missing_info"])
+        assert "磁盘 SMART 日志" in result["missing_info"]
+
 
 class TestParseDiagnosisResponse:
     def test_valid_json_returns_llm_source(self):

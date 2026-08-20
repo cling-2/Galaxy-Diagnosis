@@ -14,6 +14,7 @@ from galaxy_diag.shared.constants import (
     ENV_TYPE_LABELS,
 )
 from galaxy_diag.shared.types import (
+    DiagnosisResult,
     DiagnosticContext,
     EnvInfo,
 )
@@ -141,10 +142,33 @@ FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
 # ===== 上下文格式化 =====
 
 
+def format_rule_hint(rule: DiagnosisResult | None) -> str:
+    """将规则初筛结果格式化为 LLM 提示文本
+
+    仅 SUSPECTED 规则命中时调用（CONFIRMED 已在上游短路返回）。
+    作为提示种子注入 user message，供 LLM 深化：充实证据、细化排查步骤、修正故障范围。
+    rule 为 None 时返回空串（规则未命中，无提示）。
+    """
+    if rule is None:
+        return ""
+
+    parts: list[str] = ["\n## 规则初筛提示（仅供参考，需结合采集信息进一步验证，勿直接照搬）"]
+    parts.append(f"- 初筛根因: {rule.root_cause}")
+    parts.append("- 初筛选置信度: 推测（suspected）")
+    if rule.evidence:
+        parts.append(f"- 初筛证据: {'；'.join(rule.evidence)}")
+    parts.append(
+        "请结合上述初筛与采集到的信息进行更深入的分析：可能确认、可能修正范围，"
+        "也可能因证据不足降级为信息不足。最终结论由你判定。"
+    )
+    return "\n".join(parts)
+
+
 def format_diagnosis_context(
     ctx: DiagnosticContext,
     env_info: EnvInfo,
     retrieval_result: RetrievalResult | None = None,
+    rule_hint: DiagnosisResult | None = None,
 ) -> str:
     """将诊断上下文格式化为 Prompt 可消费的文本
 
@@ -219,6 +243,11 @@ def format_diagnosis_context(
             parts.append("")
         parts.append("</customer-cases>")
 
+    # 10. 规则初筛提示（SUSPECTED 命中时作为深化种子注入）
+    hint_text = format_rule_hint(rule_hint)
+    if hint_text:
+        parts.append(hint_text)
+
     return "\n".join(parts)
 
 
@@ -230,10 +259,11 @@ def build_diagnosis_messages(
     env_info: EnvInfo,
     diagnostic_context: DiagnosticContext,
     retrieval_result: RetrievalResult | None = None,
+    rule_hint: DiagnosisResult | None = None,
 ) -> list[dict[str, str]]:
     """组装完整的 LLM 消息列表
 
-    结构：system → few-shot → user（含格式化上下文 + 可选客户案例）
+    结构：system → few-shot → user（含格式化上下文 + 可选客户案例 + 可选规则初筛提示）
     返回 OpenAI 格式的消息列表。
 
     Args:
@@ -241,6 +271,7 @@ def build_diagnosis_messages(
         env_info: 环境感知产出
         diagnostic_context: 诊断信息采集产出
         retrieval_result: 客户案例检索结果（可选，None 时行为与原有一致）
+        rule_hint: SUSPECTED 规则初筛结果（可选，作为深化种子注入 LLM）
 
     Returns:
         消息列表 [{"role": "...", "content": "..."}, ...]
@@ -254,7 +285,9 @@ def build_diagnosis_messages(
     messages.extend(FEW_SHOT_EXAMPLES)
 
     # 3. User message（含诊断上下文）
-    context_text = format_diagnosis_context(diagnostic_context, env_info, retrieval_result)
+    context_text = format_diagnosis_context(
+        diagnostic_context, env_info, retrieval_result, rule_hint
+    )
     messages.append({"role": "user", "content": context_text})
 
     return messages

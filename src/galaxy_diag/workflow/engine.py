@@ -63,7 +63,6 @@ from galaxy_diag.workflow.states import (
 
 
 # 诊断回退次数上限（防止 LLM 反复返回 INSUFFICIENT 死循环）
-MAX_DIAGNOSING_RETRIES = 2
 
 # 安全检测回退次数上限（防止 D-03 反复失败导致 PLANNING 死循环）
 MAX_SECURITY_RETRIES = 2
@@ -506,51 +505,56 @@ class WorkflowEngine:
             self._mark_done("LLM 推理服务不可用")
             return
 
-        # FORMAT_FALLBACK：模型可用但输出格式异常，降级但继续流程
+        # FORMAT_FALLBACK：模型可用但输出格式异常，降级终止
         # （小模型常见问题：能推理但不会严格输出 JSON）
+        # 无有效诊断结论 → 不进 PLANNING，提示更换模型后重跑
         if diagnosis.diagnosis_source == DiagnosisSource.FORMAT_FALLBACK:
             self._console.print(
-                "\n[warning]⚠ 模型输出格式异常，建议使用更大参数的模型"
-                "（如 qwen3:8b）以获得结构化诊断结论[/warning]"
+                "\n[warning]⚠ 模型输出格式异常，未能生成结构化诊断结论。[/warning]"
             )
-            # 不终止，降级为 INSUFFICIENT 后继续到 PLANNING
-            self._transition(WorkflowStep.PLANNING)
+            self._console.print(
+                "[dim]  建议使用更大参数的模型（如 qwen3:8b），"
+                "更换后使用 galaxy-diag run --resume 恢复[/dim]"
+            )
+            self._mark_done("LLM 输出格式异常")
             return
 
         # 分支判断
         if diagnosis.confidence == Confidence.INSUFFICIENT:
-            # 检查回退次数上限（防止 LLM 反复返回 insufficient 死循环）
-            retry_count = sum(
-                1 for h in self.state.history
-                if h.get("step") == WorkflowStep.COLLECTING.value
-                and h.get("result") == "entered"
+            # 无法定位根因：硬终止，提示补充后重跑
+            # （不回退重采、不进 PLANNING——为未知根因生成修复既无意义且有安全风险）
+            # 缺失信息/排查步骤已在上方 print_diagnosis 打印，此处仅收尾提示，避免重复
+            self._console.print(
+                "\n[warning]⚠ 未能确定根因：上述缺失信息是定位关键，"
+                "请补充后重新运行。[/warning]"
             )
-            if retry_count >= MAX_DIAGNOSING_RETRIES:
-                self._console.print(
-                    f"[warning]已回退补充采集 {retry_count} 次，"
-                    f"基于当前信息继续分析[/warning]"
-                )
-                self._transition(WorkflowStep.PLANNING)
-                return
-
-            # 信息不足，回退到 COLLECTING 补充采集
-            self._console.print("\n[warning]⚠ 信息不足，需要补充采集[/warning]")
-            if not self.auto:
-                if interact.confirm("是否补充采集信息?", default=True):
-                    supplement = "；".join(diagnosis.missing_info)
-                    self.state.problem_description += f"\n[补充采集] {supplement}"
-                    self._transition(WorkflowStep.COLLECTING)
-                else:
-                    self._console.print("[dim]跳过补充采集，基于当前信息继续[/dim]")
-                    self._transition(WorkflowStep.PLANNING)
-            else:
-                # 自动模式：自动回退补充采集
-                supplement = "；".join(diagnosis.missing_info)
-                self.state.problem_description += f"\n[补充采集] {supplement}"
-                self._transition(WorkflowStep.COLLECTING)
+            self._console.print(
+                "[dim]  使用 galaxy-diag run --resume 恢复本次会话继续分析[/dim]"
+            )
+            self._mark_done("信息不足，未能确定根因")
             return
 
-        # CONFIRMED / SUSPECTED：继续到 PLANNING
+        # SUSPECTED：根因尚未完全确认，由用户决定继续修复还是自行排查后重跑
+        if diagnosis.confidence == Confidence.SUSPECTED:
+            if not self.auto:
+                self._console.print(
+                    "\n[warning]⚠ 根因为推测，尚未完全确认。[/warning]"
+                )
+                if not interact.confirm(
+                    "是否继续生成修复建议?（否 = 按排查步骤自行排查，补充信息后重跑）",
+                    default=True,
+                ):
+                    self._console.print(
+                        "\n[dim]建议按上述排查步骤自行排查，补充信息后使用 "
+                        "galaxy-diag run --resume 重新运行[/dim]"
+                    )
+                    self._mark_done("推测根因，用户选择自行排查")
+                    return
+            # auto 模式或用户选是：继续到 PLANNING（推测根因仍可作为修复依据，但用户已知情）
+            self._transition(WorkflowStep.PLANNING)
+            return
+
+        # CONFIRMED：继续到 PLANNING
         if not self.auto:
             # 逐步模式：展示结论后等待用户确认
             if not interact.confirm("是否继续生成修复建议?", default=True):

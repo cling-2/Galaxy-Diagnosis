@@ -111,7 +111,21 @@ class MockModelAdapter:
         is_k8s = "kubernetes" in full_text.lower() or "k8s" in full_text.lower() or "kube-system" in full_text.lower()
 
         # 根据问题描述关键词判断故障类型（优先匹配更具体的关键词）
-        if "磁盘" in full_text or "存储" in full_text or "disk" in full_text.lower() or "pvscsi" in full_text.lower():
+        if "信息不足" in full_text or "不确定" in full_text or "不明原因" in full_text:
+            # 信息不足场景（测试 insufficient 路径）
+            response = {
+                "root_cause": "",
+                "confidence": "insufficient",
+                "evidence": [],
+                "missing_info": ["具体故障组件的详细日志", "系统配置变更记录", "资源使用趋势"],
+                "investigation_steps": [
+                    "检查系统日志: journalctl -n 100",
+                    "检查服务状态: systemctl status galaxy-*",
+                    "查看资源占用: top -bn1 | head -20",
+                ],
+                "fault_scope": "",
+            }
+        elif "磁盘" in full_text or "存储" in full_text or "disk" in full_text.lower() or "pvscsi" in full_text.lower():
             # 磁盘/存储故障
             if env_type == "container":
                 response = {

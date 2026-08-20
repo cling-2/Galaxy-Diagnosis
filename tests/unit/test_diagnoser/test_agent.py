@@ -53,8 +53,8 @@ def _make_ctx_matching_rule() -> DiagnosticContext:
 
 
 class TestDiagnoseRuleMatch:
-    def test_rule_match_returns_without_calling_llm(self):
-        """规则匹配命中时不调用 LLM"""
+    def test_confirmed_rule_match_returns_without_calling_llm(self):
+        """CONFIRMED 规则命中直接返回，不调用 LLM"""
         ctx = _make_ctx_matching_rule()
         env_info = _make_env_info()
         mock_adapter = MagicMock()
@@ -64,6 +64,41 @@ class TestDiagnoseRuleMatch:
         assert result.diagnosis_source == DiagnosisSource.RULE_MATCH
         assert result.confidence == Confidence.CONFIRMED
         mock_adapter.chat.assert_not_called()
+
+    def test_suspected_rule_match_calls_llm_for_deepening(self):
+        """SUSPECTED 规则命中不短路，交给 LLM 深化（rule_hint 注入）"""
+        from galaxy_diag.diagnoser.rules import match_rules
+
+        # 构造一个只命中 SUSPECTED 规则的上下文（service_start_fail: match "failed"）
+        from galaxy_diag.shared.types import LogSnippet
+        ctx = DiagnosticContext(
+            problem_description="服务异常",
+            env_info_ref="bare_metal",
+            component_status=[{"name": "galaxy-compute", "status": "failed", "detail": ""}],
+        )
+        # 确认该上下文命中 suspected 规则
+        rule_result = match_rules(ctx)
+        assert rule_result is not None
+        assert rule_result.confidence == Confidence.SUSPECTED
+
+        env_info = _make_env_info()
+        mock_adapter = MagicMock()
+        llm_output = json.dumps({
+            "root_cause": "深化后的根因",
+            "confidence": "suspected",
+            "evidence": ["证据1"],
+            "missing_info": [],
+            "investigation_steps": ["排查步骤1"],
+            "fault_scope": "范围1",
+        })
+        mock_adapter.chat.return_value = llm_output
+
+        result = diagnose("服务异常", env_info, ctx, mock_adapter)
+
+        # LLM 被调用了（suspected 不短路）
+        mock_adapter.chat.assert_called_once()
+        # 结果来自 LLM（可能被 LLM 修正），不是规则直接返回
+        assert result.root_cause == "深化后的根因"
 
 
 class TestDiagnoseLLMPath:
