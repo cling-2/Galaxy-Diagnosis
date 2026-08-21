@@ -4,8 +4,8 @@
 # 前置条件：
 #   deploy/offline/ 目录已存在（由 prepare_offline.sh 生成），包含：
 #     - wheels/                    Python 依赖
-#     - ollama-linux-amd64.tar.zst Ollama 安装包
-#     - *.gguf                     模型文件
+#     - ollama-linux-amd64.tar.gz  Ollama 安装包（.tar.gz 优先；兼容 .tar.zst 旧格式）
+#     - *.gguf                      模型文件（对话模型 + Embedding 模型）
 #
 # 用法：
 #   bash deploy/install_offline.sh
@@ -16,6 +16,7 @@
 #
 # 模型导入：
 #   遍历 deploy/offline/*.gguf，按文件名自动推导 Ollama 注册名并导入。
+#   对话模型使用 deploy/Modelfile（含推理参数）；Embedding 模型（bge-*）仅 FROM 注册。
 #   放几个 gguf 就导入几个，名字与文件实际参数量一致，不硬编码。
 #
 # 服务日志：
@@ -38,9 +39,11 @@ SERVER_LOG_FILE="$SERVER_LOG_DIR/ollama.log"
 
 # 颜色输出
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+info()  { echo -e "${YELLOW}▶${NC} $1"; }
 ok()   { echo -e "${GREEN}✓${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; }
 
@@ -83,51 +86,94 @@ echo "==> [1/3] 安装 Ollama..."
 if command -v ollama &>/dev/null; then
     ok "Ollama 已安装: $(ollama --version 2>&1 | head -1)"
 else
-    # 查找 Ollama 安装包：支持裸二进制或 .tar.zst 压缩包
+    # 查找 Ollama 安装包：优先 .tar.gz（重打包后通用格式），兼容裸二进制与 .tar.zst
     OLLAMA_BIN="$OFFLINE_DIR/ollama"
-    OLLAMA_TARZST=$(ls "$OFFLINE_DIR"/ollama-linux-amd64*.tar.zst 2>/dev/null | head -1)
+    OLLAMA_TARGZ=""
+    OLLAMA_TARZST=""
+    # 用 for 循环 + glob 代替 ls，避免 set -e + pipefail 下 glob 无匹配时失败
+    for f in "$OFFLINE_DIR"/ollama-linux-amd64*.tar.gz; do [ -f "$f" ] && OLLAMA_TARGZ="$f" && break; done
+    for f in "$OFFLINE_DIR"/ollama-linux-amd64*.tar.zst; do [ -f "$f" ] && OLLAMA_TARZST="$f" && break; done
 
     if [ -f "$OLLAMA_BIN" ]; then
         # 裸二进制方式
         echo "    从裸二进制安装..."
         install -m 0755 "$OLLAMA_BIN" /usr/local/bin/ollama
-    elif [ -n "$OLLAMA_TARZST" ]; then
-        # .tar.zst 压缩包方式（Ollama 官方格式，含二进制+库文件）
-        echo "    从 $OLLAMA_TARZST 解压安装..."
-        # 检查 zstd 是否可用
-        if ! command -v zstd &>/dev/null; then
-            fail "zstd 未安装，无法解压 .tar.zst"
-            echo "💡 安装 zstd: apt-get install zstd（离线环境需提前准备）"
+    elif [ -n "$OLLAMA_TARGZ" ]; then
+        # .tar.gz 压缩包方式（prepare_offline.sh 重打包产物，仅依赖系统自带 tar）
+        echo "    从 $OLLAMA_TARGZ 解压安装..."
+        rm -rf /tmp/ollama_extract
+        mkdir -p /tmp/ollama_extract
+        if ! tar xf "$OLLAMA_TARGZ" -C /tmp/ollama_extract/; then
+            fail "解压失败: $OLLAMA_TARGZ"
+            rm -rf /tmp/ollama_extract
             exit 1
         fi
-        # 解压到临时目录
-        zstd -d "$OLLAMA_TARZST" -o /tmp/ollama.tar --force
-        mkdir -p /tmp/ollama_extract
-        tar xf /tmp/ollama.tar -C /tmp/ollama_extract/
 
-        # 安装 ollama 二进制
-        EXTRACTED_BIN=$(find /tmp/ollama_extract -name "ollama" -type f -executable 2>/dev/null | head -1)
+        # 安装 ollama 二进制（找可执行文件，不依赖 -executable 标志以兼容精简 find）
+        EXTRACTED_BIN=$(find /tmp/ollama_extract -name "ollama" -type f 2>/dev/null | head -1)
         if [ -z "$EXTRACTED_BIN" ]; then
             fail "解压后未找到 ollama 二进制"
-            rm -rf /tmp/ollama.tar /tmp/ollama_extract
+            echo "  解压目录内容:"; ls -R /tmp/ollama_extract | head -30
+            rm -rf /tmp/ollama_extract
             exit 1
         fi
         install -m 0755 "$EXTRACTED_BIN" /usr/local/bin/ollama
+        ok "Ollama 二进制已安装: /usr/local/bin/ollama"
 
         # 安装 lib/ollama/ 目录（含 llama-quantize 等运行时库，ollama create 需要）
+        # 路径匹配 lib/ollama 目录；找不到不致命，仅警告
         EXTRACTED_LIB=$(find /tmp/ollama_extract -type d -name "ollama" -path "*/lib/ollama" 2>/dev/null | head -1)
         if [ -n "$EXTRACTED_LIB" ]; then
             mkdir -p /usr/local/lib/ollama
-            cp -r "$EXTRACTED_LIB"/* /usr/local/lib/ollama/
-            chmod -R 0755 /usr/local/lib/ollama
-            ok "运行时库已安装: $(ls /usr/local/lib/ollama/ | wc -l) 个文件"
+            cp -r "$EXTRACTED_LIB"/* /usr/local/lib/ollama/ 2>/dev/null || true
+            chmod -R 0755 /usr/local/lib/ollama 2>/dev/null || true
+            lib_count=$(ls /usr/local/lib/ollama/ 2>/dev/null | wc -l)
+            ok "运行时库已安装: ${lib_count} 个文件"
         else
             echo "    ⚠ 未找到 lib/ollama 目录，ollama create 导入模型可能失败"
         fi
 
+        rm -rf /tmp/ollama_extract
+    elif [ -n "$OLLAMA_TARZST" ]; then
+        # .tar.zst 兼容方式（旧介质）：需 zstd，断网环境是隐患
+        echo "    从 $OLLAMA_TARZST 解压安装（.tar.zst 旧格式，需要 zstd）..."
+        if ! command -v zstd &>/dev/null; then
+            fail "zstd 未安装，无法解压 .tar.zst"
+            echo "💡 介质中为 .tar.zst 旧格式，需客户机预装 zstd"
+            echo "  建议在准备机重新执行 prepare_offline.sh（会重打包为 .tar.gz，无需 zstd）"
+            exit 1
+        fi
+        if ! zstd -d "$OLLAMA_TARZST" -o /tmp/ollama.tar --force; then
+            fail "zstd 解压失败: $OLLAMA_TARZST"
+            exit 1
+        fi
+        rm -rf /tmp/ollama_extract
+        mkdir -p /tmp/ollama_extract
+        if ! tar xf /tmp/ollama.tar -C /tmp/ollama_extract/; then
+            fail "tar 解压失败"
+            rm -rf /tmp/ollama.tar /tmp/ollama_extract
+            exit 1
+        fi
+        EXTRACTED_BIN=$(find /tmp/ollama_extract -name "ollama" -type f 2>/dev/null | head -1)
+        if [ -z "$EXTRACTED_BIN" ]; then
+            fail "解压后未找到 ollama 二进制"
+            echo "  解压目录内容:"; ls -R /tmp/ollama_extract | head -30
+            rm -rf /tmp/ollama.tar /tmp/ollama_extract
+            exit 1
+        fi
+        install -m 0755 "$EXTRACTED_BIN" /usr/local/bin/ollama
+        ok "Ollama 二进制已安装: /usr/local/bin/ollama"
+        EXTRACTED_LIB=$(find /tmp/ollama_extract -type d -name "ollama" -path "*/lib/ollama" 2>/dev/null | head -1)
+        if [ -n "$EXTRACTED_LIB" ]; then
+            mkdir -p /usr/local/lib/ollama
+            cp -r "$EXTRACTED_LIB"/* /usr/local/lib/ollama/ 2>/dev/null || true
+            chmod -R 0755 /usr/local/lib/ollama 2>/dev/null || true
+            lib_count=$(ls /usr/local/lib/ollama/ 2>/dev/null | wc -l)
+            ok "运行时库已安装: ${lib_count} 个文件"
+        fi
         rm -rf /tmp/ollama.tar /tmp/ollama_extract
     else
-        fail "未找到 Ollama 安装包（裸二进制或 .tar.zst）"
+        fail "未找到 Ollama 安装包（.tar.gz / .tar.zst / 裸二进制）"
         echo "💡 请先在有网机器上执行 prepare_offline.sh 下载"
         exit 1
     fi
@@ -264,9 +310,28 @@ for GGUF_FILE in "${GGUF_FILES[@]}"; do
         ok "模型已存在: $MODEL_NAME"
     else
         TMP_MODElFILE=$(mktemp)
-        cat > "$TMP_MODElFILE" <<EOF
+
+        # 判断是否为 Embedding 模型：以 bge 开头的只需 FROM 注册，无需对话参数
+        # 对话模型使用项目 deploy/Modelfile（含 temperature/stop 等推理参数）
+        PROJECT_MODElFILE="$SCRIPT_DIR/Modelfile"
+
+        if echo "$MODEL_NAME" | grep -q "^bge"; then
+            # Embedding 模型：仅 FROM 注册
+            cat > "$TMP_MODElFILE" <<EOF
 FROM $GGUF_FILE
 EOF
+        elif [ -f "$PROJECT_MODElFILE" ]; then
+            # 对话模型：复用项目 Modelfile，将 FROM 行替换为实际 GGUF 路径
+            sed "s|^FROM .*|FROM $GGUF_FILE|" "$PROJECT_MODElFILE" > "$TMP_MODElFILE"
+            info "使用项目 Modelfile（含推理参数）"
+        else
+            # 对话模型但无项目 Modelfile：仅 FROM
+            cat > "$TMP_MODElFILE" <<EOF
+FROM $GGUF_FILE
+EOF
+            info "未找到项目 Modelfile，使用默认配置"
+        fi
+
         echo "    从 $GGUF_BASENAME 导入为 $MODEL_NAME ..."
         if ollama create "$MODEL_NAME" -f "$TMP_MODElFILE"; then
             ok "模型导入成功: $MODEL_NAME"

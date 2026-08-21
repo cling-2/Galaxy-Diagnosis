@@ -74,7 +74,7 @@ galaxy-diag/
 ├── deploy/
 │   ├── prepare_offline.sh    # 联网准备机：下载 Ollama + 模型 GGUF + Python wheels
 │   ├── install_offline.sh    # 断网客户机：一键安装 Ollama + 模型 + 依赖
-│   └── Modelfile             # Ollama 模型定义文件（离线导入参考）
+│   └── Modelfile             # 对话模型 Ollama 定义（含推理参数，install 脚本自动复用）
 ├── tests/
 ├── config.yaml               # 默认配置（零外网地址，model=qwen3:1.7b）
 ├── requirements.txt          # 依赖集（openai/httpx/pyyaml/rich/numpy）
@@ -249,7 +249,7 @@ config.yaml 文件 → 环境变量覆盖（前缀 `GALAXY_`，如 `GALAXY_LLM_B
 | config/loader | 缺少必填字段 | 抛 ConfigError，提示字段名 | "缺少 llm.base_url 配置" |
 | precheck/hardware | CPU/内存不足 | 打印差距表，exit(1) | "请升级至 4 核 CPU / 8 GB 内存" |
 | model/health | 服务不可达 | 打印连接信息，exit(1) | "请确认 Ollama 已启动: systemctl status ollama" |
-| model/health | 模型不存在 | 列出可用模型，exit(1) | "请先导入模型: ollama create qwen3:8b -f Modelfile" |
+| model/health | 模型不存在 | 列出可用模型，exit(1) | "请先导入模型（install_offline.sh 会自动 ollama create）" |
 | model/adapter | 推理超时 | 抛 ModelCallError | "推理超时(120s)，纯 CPU 环境建议使用更小模型" |
 | model/adapter | 429 限频 | OpenAI SDK 内置重试，耗尽后抛错 | "模型服务限频，请稍后重试" |
 
@@ -297,12 +297,14 @@ numpy>=1.26.0           # RAG 知识库向量计算（余弦相似度）
 
 | 决策 | 理由 |
 |------|------|
-| Ollama 用 `.tar.zst` 压缩包而非裸二进制 | 压缩包含 `lib/ollama/` 运行时库，裸二进制缺 `llama-quantize` 会导致 `ollama create` 失败 |
-| Python wheel 用 Docker 容器下载 | Windows 直接 `pip download` 得到 `win_amd64` wheel 装不进 Linux；Docker 容器确保 Linux 平台匹配 |
+| Ollama 安装包：准备机下载 `.tar.zst` 后重打包为 `.tar.gz` | Ollama 官方只发 `.tar.zst`，需 zstd 解压；断网客户机未必预装 zstd，是部署隐患。准备机有网可装 zstd，重打包为 `.tar.gz` 后客户机只需系统自带 `tar` 即可解压 |
+| Ollama 安装包包含 `lib/ollama/` 运行时库 | 裸二进制缺 `llama-quantize` 会导致 `ollama create` 失败，压缩包含完整库 |
+| Python wheel 用 Docker 容器下载 | Windows 直接 `pip download` 得到 `win_amd64` wheel 装不进 Linux；Docker 容器确保 Linux 平台匹配；下载前清空 wheels 目录避免重复版本累积 |
 | 模型用 GGUF + `ollama create` 离线导入 | 符合断网假设，不依赖 `ollama pull` 联网 |
+| 对话模型使用 `deploy/Modelfile` | 含 temperature/stop 等推理参数，`install_offline.sh` 自动复用并替换 FROM 路径；Embedding 模型（bge-*）仅 FROM 注册 |
 | Ollama 绑定 `127.0.0.1` | 防止局域网内其他机器误调用推理服务 |
 | install 脚本自动创建 venv | 避免依赖污染系统 Python，符合工程规范 |
-| 解压需 `zstd` 工具 | 客户机需预装 `zstd`（`apt-get install zstd`），脚本会检测并提示 |
+| 客户机解压仅需 `tar` | `.tar.zst` 旧介质仍兼容（需 zstd），但 `.tar.gz` 为推荐格式，消除 zstd 隐式依赖 |
 
 ## 10. 验收对照
 

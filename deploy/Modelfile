@@ -1,16 +1,37 @@
-# Ollama 模型定义文件 - qwen3:8b
-# 用于离线导入模型到 Ollama
+# Ollama 模型定义文件 — 对话模型（qwen3 系列）
+# 用于离线导入对话模型到 Ollama，含推理参数（install_offline.sh 自动复用本文件）。
 #
 # 用法：
-#   1. 将 GGUF 模型文件与本文件放在同一目录
-#   2. 执行: ollama create qwen3:8b -f deploy/Modelfile
+#   本文件由 deploy/install_offline.sh 自动调用，无需手动执行。
+#   脚本会将下方 FROM 行替换为 deploy/offline/ 下实际找到的对话模型 GGUF 路径，
+#   因此 FROM 写什么文件名均可（保留占位即可）。
 #
-# GGUF 文件获取（在有网机器上）：
-#   方式一：从 HuggingFace / ModelScope 下载
-#     https://huggingface.co/Qwen/Qwen3-8B-GGUF
-#     选择 Q4_K_M 量化版本（约 4.9 GB）
-#   方式二：从已有 Ollama 的机器导出
-#     ollama pull qwen3:8b   # 联网拉取
-#     ollama show qwen3:8b --modelfile   # 查看其 Modelfile
+# 手动导入（如需调试）：
+#   ollama create qwen3:1.7b -f deploy/Modelfile
+#   （手动时需将 FROM 改为实际 GGUF 文件名）
+#
+# GGUF 文件获取（在有网机器上执行 prepare_offline.sh 自动下载）：
+#   或手动从 ModelScope 下载 Qwen3-1.7B-Q8_0.gguf
 
-FROM ./qwen3-8b-q4_k_m.gguf
+# 占位文件名，install_offline.sh 会替换为实际 GGUF 路径
+FROM ./Qwen3-1.7B-Q8_0.gguf
+
+# ===== 推理参数 =====
+# 银河平台部署问题定位工具要求结构化、确定性的输出（JSON 诊断结论/修复建议），
+# 故采用低温度 + 指定 stop tokens，抑制发散与未结束生成。
+
+# 低温度：减少随机性，提升诊断结论的稳定性与可复现性
+PARAMETER temperature 0.3
+
+# top_p 与温度配合，限制采样范围
+PARAMETER top_p 0.9
+
+# 控制重复惩罚，避免根因分析时重复同一结论
+PARAMETER repeat_penalty 1.1
+
+# 单次最大输出 token 数（与 config.yaml llm.max_tokens 对齐）
+PARAMETER num_predict 1024
+
+# 停止 token：Qwen3 系列 chat 模型的结束标记，防止生成不收尾
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
