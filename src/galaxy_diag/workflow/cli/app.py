@@ -46,8 +46,6 @@ from galaxy_diag.workflow.cli.display import get_console, init_console, print_he
 _COMMANDS: list[tuple[str, str]] = [
     ("galaxy_diag.workflow.cli.cmd_env", "env"),
     ("galaxy_diag.workflow.cli.cmd_diagnose", "diagnose"),
-    ("galaxy_diag.workflow.cli.cmd_fix", "fix"),
-    ("galaxy_diag.workflow.cli.cmd_review", "review"),
     ("galaxy_diag.workflow.cli.cmd_snapshot", "snapshot"),
     ("galaxy_diag.workflow.cli.cmd_audit_log", "audit-log"),
     ("galaxy_diag.workflow.cli.cmd_trace", "trace"),
@@ -58,7 +56,7 @@ _COMMANDS: list[tuple[str, str]] = [
 
 
 # 需要 LLM 推理（因而依赖硬件资源）的子命令集合。
-# 仅这些命令在分发前触发硬件预检；env/snapshot/audit-log/completion/fix/review
+# 仅这些命令在分发前触发硬件预检；env/snapshot/audit-log/completion
 # 不调用模型，跳过预检。新增需要预检的命令时在此追加命令名即可。
 _PRECHECK_REQUIRED_COMMANDS: frozenset[str] = frozenset({"run", "diagnose"})
 
@@ -196,7 +194,7 @@ def main() -> None:
         return
 
     # 启动前硬件预检：仅对调用 LLM 的子命令（run / diagnose）执行；
-    # --mock 模式同样跳过。env/snapshot/audit-log/completion/fix/review 不触发 LLM，无需预检。
+    # --mock 模式同样跳过。env/snapshot/audit-log/completion 不触发 LLM，无需预检。
     if _needs_precheck(args):
         _run_precheck(skip=args.skip_precheck, config_path=args.config)
 

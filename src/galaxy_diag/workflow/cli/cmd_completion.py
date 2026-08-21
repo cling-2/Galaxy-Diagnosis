@@ -15,8 +15,6 @@ from galaxy_diag.workflow.cli.display import get_console
 _COMMAND_HELP = {
     "env": "环境识别 & 硬件采集",
     "diagnose": "问题诊断",
-    "fix": "修复建议查看/编辑",
-    "review": "审核确认",
     "snapshot": "快照管理/回滚",
     "audit-log": "审计日志查询",
     "run": "端到端工作流",
