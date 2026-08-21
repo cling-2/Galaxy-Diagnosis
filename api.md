@@ -10,8 +10,6 @@
   - [run](#run)
   - [env](#env)
   - [diagnose](#diagnose)
-  - [fix](#fix)
-  - [review](#review)
   - [snapshot](#snapshot)
   - [audit-log](#audit-log)
   - [trace](#trace)
@@ -108,40 +106,6 @@ galaxy-diag diagnose -d TEXT [--log-file PATH] [--no-collect] [--output {table,j
 **触发预检：** 是
 
 **输出置信度：** `confirmed`（已确认）/ `suspected`（推测）/ `insufficient`（信息不足）
-
-### fix
-
-> REQ-D-01 / D-02 / D-03 | 修复建议查看/编辑
-
-```
-galaxy-diag fix [--session ID] [--edit] [--generate-script] [--output {table,script}]
-```
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `--session` | str | 否 | — | 诊断会话 ID |
-| `--edit` | flag | 否 | false | 交互式编辑修复参数（逐个提示填写占位符值） |
-| `--generate-script` | flag | 否 | false | 生成多步骤修复脚本（Bash/Python） |
-| `--output` | enum | 否 | `table` | 输出格式：`table` / `script` |
-
-**触发预检：** 否
-
-### review
-
-> REQ-E-01 / F-03 | 审核确认
-
-```
-galaxy-diag review [--session ID] [--step NUMBER]
-```
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `--session` | str | 否 | — | 诊断会话 ID |
-| `--step` | int | 否 | — | 审核指定步骤编号 |
-
-**触发预检：** 否
-
-**确认方式：** 普通操作 `[y/N]`；危险操作需输入 `CONFIRM` 全称（红线 2）
 
 ### snapshot
 

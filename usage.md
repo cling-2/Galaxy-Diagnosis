@@ -38,7 +38,7 @@
 | 方式 | 命令 | 适用场景 |
 |------|------|----------|
 | 端到端闭环 | `galaxy-diag run` | 完整诊断+修复流程，从问题描述到修复完成 |
-| 单步命令 | `galaxy-diag env` / `diagnose` / `fix` / … | 仅执行某一环节，如只看环境信息、只做诊断 |
+| 单步命令 | `galaxy-diag env` / `diagnose` / `snapshot` / … | 仅执行某一环节，如只看环境信息、只做诊断、查看快照 |
 
 **调用方式：**
 
@@ -78,8 +78,6 @@ python -m galaxy_diag <子命令> [选项]  # 通过模块运行
 | `run` | 端到端 7 步闭环工作流 | `galaxy-diag run -d "容器网络不通"` |
 | `env` | 环境识别 + 硬件采集 | `galaxy-diag env`，`galaxy-diag env --type-only` |
 | `diagnose` | 独立诊断（不进入修复） | `galaxy-diag diagnose -d "磁盘挂载失败"` |
-| `fix` | 修复建议查看/编辑 | `galaxy-diag fix --session <id> --edit` |
-| `review` | 审核确认 | `galaxy-diag review --session <id>` |
 | `snapshot` | 快照管理与回滚 | `galaxy-diag snapshot list`，`galaxy-diag snapshot rollback <id>` |
 | `audit-log` | 审计日志查询 | `galaxy-diag audit-log --since "2026-08-14"` |
 | `trace` | 推理链路查看 | `galaxy-diag trace <session_id>` |

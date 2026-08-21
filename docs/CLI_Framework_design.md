@@ -129,28 +129,6 @@ galaxy-diag diagnose [选项]
   --output FORMAT     输出格式: table (默认), json
 ```
 
-#### `galaxy-diag fix`
-
-```
-galaxy-diag fix [选项]
-
-选项:
-  --session ID        诊断会话 ID（必需）
-  --edit              交互式编辑修复参数
-  --generate-script   生成多步骤修复脚本
-  --output FORMAT     输出格式: table (默认), script
-```
-
-#### `galaxy-diag review`
-
-```
-galaxy-diag review [选项]
-
-选项:
-  --session ID        诊断会话 ID（必需）
-  --step NUMBER       审核指定步骤编号
-```
-
 #### `galaxy-diag snapshot`
 
 ```
@@ -689,11 +667,10 @@ CLI 框架引入的新依赖：
 | 10 | NO_COLOR | `NO_COLOR=1 galaxy-diag env` | 输出无 ANSI 颜色码 | 集成测试 |
 | 11 | 管道模式 | `galaxy-diag env --output json \| jq .` | JSON 输出，无颜色/动画 | 集成测试 |
 | 12 | 外网请求检测 | grep 全项目代码 | 无 `https://` 或非 localhost 的 `http://` | CI 脚本/静态扫描 |
-| 13 | 子命令 stub | `galaxy-diag fix --session test` | 输出"修复建议模块尚未实现 (REQ-D)" | 集成测试 |
-| 14 | 无效子命令 | `galaxy-diag invalid_cmd` | argparse 错误提示 + 退出码 2 | 集成测试 |
-| 15 | Ctrl+C 中断 | 交互过程中按 Ctrl+C | 输出"已中断" + 退出码 130 | 手动测试 |
-| 16 | 用户可见步骤标题 | `galaxy-diag run --mock` 全流程 | 打印 7 个步骤标题（1/7 ~ 7/7），SECURITY_CHECKING/EXECUTION_GUARD/SNAPSHOT 不打印独立标题 | 集成测试 |
-| 17 | SECURITY_CHECKING 归属修复建议 | D-03 检测通过 | 安全性提示显示在步骤 4/7 内，不切换步骤标题 | 集成测试 |
-| 18 | EXECUTION_GUARD 归属人工审核 | E-02 熔断通过 | 熔断结果显示在步骤 5/7 内，不切换步骤标题 | 集成测试 |
-| 19 | SNAPSHOT 归属执行 | 用户确认后 | 显示「正在创建快照」提示，快照创建后进入执行，不切换步骤标题 | 集成测试 |
-| 20 | D-03 CRITICAL 回退 | 生成后检测有 CRITICAL 问题 | 回退到 PLANNING 重新生成，用户仍停留在步骤 4/7 | 集成测试 |
+| 13 | 无效子命令 | `galaxy-diag invalid_cmd` | argparse 错误提示 + 退出码 2 | 集成测试 |
+| 14 | Ctrl+C 中断 | 交互过程中按 Ctrl+C | 输出"已中断" + 退出码 130 | 手动测试 |
+| 15 | 用户可见步骤标题 | `galaxy-diag run --mock` 全流程 | 打印 7 个步骤标题（1/7 ~ 7/7），SECURITY_CHECKING/EXECUTION_GUARD/SNAPSHOT 不打印独立标题 | 集成测试 |
+| 16 | SECURITY_CHECKING 归属修复建议 | D-03 检测通过 | 安全性提示显示在步骤 4/7 内，不切换步骤标题 | 集成测试 |
+| 17 | EXECUTION_GUARD 归属人工审核 | E-02 熔断通过 | 熔断结果显示在步骤 5/7 内，不切换步骤标题 | 集成测试 |
+| 18 | SNAPSHOT 归属执行 | 用户确认后 | 显示「正在创建快照」提示，快照创建后进入执行，不切换步骤标题 | 集成测试 |
+| 19 | D-03 CRITICAL 回退 | 生成后检测有 CRITICAL 问题 | 回退到 PLANNING 重新生成，用户仍停留在步骤 4/7 | 集成测试 |
