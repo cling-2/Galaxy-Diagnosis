@@ -43,9 +43,23 @@ if TYPE_CHECKING:
 
 
 def _read_file(path: str, max_bytes: int = 65536) -> str | None:
-    """读取文件内容（最多 max_bytes 字节），失败返回 None"""
+    """读取文件内容（最多 max_bytes 字节），失败返回 None
+
+    安全防护：跳过符号链接到 /dev/* 的特殊文件（如 Docker 容器中
+    /var/log/nginx/error.log → /dev/stderr）。这类文件 open() 读模式会
+    阻塞等待数据（管道读端无写入者时永久挂起），是容器环境下采集卡死的常见根因。
+    """
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        # 解析符号链接后，若指向 /dev/（stdout/stderr/stdin 等设备/管道），跳过
+        real = os.path.realpath(path)
+        if real.startswith("/dev/"):
+            return None
+        # 仅读常规文件；FIFO/字符设备/套接字等特殊文件 open 可能阻塞，一并跳过
+        import stat as _stat
+        mode = os.stat(real).st_mode
+        if not _stat.S_ISREG(mode):
+            return None
+        with open(real, encoding="utf-8", errors="replace") as f:
             return f.read(max_bytes)
     except (OSError, UnicodeDecodeError):
         return None
@@ -493,6 +507,16 @@ def collect_system_resources() -> dict:
             resources["disk_usage"] = stdout.strip()
     except CollectorToolNotFoundError:
         resources["disk_usage"] = "df 不可用"
+
+    # inode 使用（df -i）
+    # inode 耗尽时磁盘空间可能仍充足，仅看 df -h 无法发现；df -i 显示 IUse% 接近 100%
+    # 即为 inode 耗尽故障（典型现象：No space left on device 但 df -h 有剩余空间）。
+    try:
+        rc, stdout, _ = _run_cmd(["df", "-i", "--output=target,inodes,iused,ifree,ipcent", "-x", "tmpfs", "-x", "devtmpfs"])
+        if rc == 0:
+            resources["inode_usage"] = stdout.strip()
+    except CollectorToolNotFoundError:
+        pass  # inode 采集非必需，缺失不阻断
 
     # CPU 使用（top 单次采样）
     try:
