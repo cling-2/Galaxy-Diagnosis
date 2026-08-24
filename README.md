@@ -174,7 +174,7 @@ galaxy-diag/
 │   ├── prepare_offline.sh       #   有网机器上下载离线介质
 │   ├── install_offline.sh       #   断网机器上离线安装依赖
 │   ├── Dockerfile               #   用于下载 Linux 平台 wheel 的容器
-│   ├── Modelfile                #   Ollama 模型定义文件
+│   ├── Modelfile                #   对话模型定义（含推理参数，install 脚本自动复用）
 │   └── offline/                 #   离线介质（不入库）
 ├── docs/                        # 设计文档
 ├── tests/                       # 测试（单元 + 集成）
