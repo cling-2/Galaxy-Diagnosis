@@ -23,4 +23,4 @@ llm:
 # 客户知识库检索配置（REQ-X-02）
 knowledge:
   top_k: 3                 # 检索返回的最大案例数
-  min_similarity: 0.5      # 最低余弦相似度阈值；经 trace 校准（相关 0.84 / 噪声 0.43），0.0=不过滤
+  min_similarity: 0.0      # 最低余弦相似度阈值，0.0=不过滤

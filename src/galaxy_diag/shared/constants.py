@@ -41,25 +41,25 @@ AUDIT_RESULT_LABELS: dict[str, str] = {
 }
 
 # 银河平台关键组件清单（供诊断采集工具预置）
-# 测试容器（test-sandbox, 179eba426a53）内真实运行的服务进程名。
-# 容器内无 docker/kubectl/systemctl，采集走进程树扫描（/proc/<pid>/cmdline 匹配），
-# 故此处须为进程命令行中可直接匹配到的字符串。
 GALAXY_COMPONENTS: list[str] = [
-    "nginx",   # 前端 / API 网关（nginx master + workers）
-    "ollama",  # LLM 推理服务（/usr/local/bin/ollama serve）
+    "galaxy-compute",      # 计算服务
+    "galaxy-network",      # 网络服务
+    "galaxy-storage",      # 存储服务
+    "galaxy-control",      # 控制面
+    "galaxy-scheduler",    # 调度器
+    "galaxy-api",          # API 网关
 ]
 
 # 关键日志路径（供采集工具预置）
-# 测试容器内真实存在的日志文件 / 故障注入目录。
-# name 为日志标识，path 为容器内绝对路径；采集时读尾部并按关键词过滤。
 KEY_LOG_PATHS: dict[str, str] = {
-    "nginx-error": "/var/log/nginx/error.log",         # nginx 错误日志
-    "nginx-access": "/var/log/nginx/access.log",       # nginx 访问日志
-    "ollama": "/var/log/galaxy-diag/ollama.log",       # Ollama LLM 服务日志
-    # 故障注入：测试环境专用的故障模拟机制
-    # /var/log/.fault-fill-* 为磁盘填充故障，/var/log/.fault-inode-* 为 inode 耗尽故障
-    "fault-inject-os-01": "/run/fault-inject/os-01.log",
-    "fault-inject-os-02": "/run/fault-inject/os-02.log",
+    "system": "/var/log/syslog",
+    "dmesg": "/var/log/dmesg",
+    "kubelet": "/var/log/kubelet.log",
+    "docker": "/var/log/docker.log",
+    "galaxy-control": "/var/log/galaxy/control.log",
+    "galaxy-network": "/var/log/galaxy/network.log",
+    "galaxy-storage": "/var/log/galaxy/storage.log",
+    "messages": "/var/log/messages",
 }
 
 # 容器运行时子类型中文标签
