@@ -50,14 +50,11 @@ GALAXY_COMPONENTS: list[str] = [
 ]
 
 # 关键日志路径（供采集工具预置）
-# 测试容器内真实存在的日志文件。
+# 测试容器内真实存在的日志文件 / 故障注入目录。
 # name 为日志标识，path 为容器内绝对路径；采集时读尾部并按关键词过滤。
-#
-# 注意：nginx 日志 /var/log/nginx/{error,access}.log 在 Docker 容器中是
-# 指向 /dev/stdout、/dev/stderr 的符号链接（Docker 标准日志模式），
-# open() 读模式会阻塞挂起，故不在此预置；其日志经 docker logs 查看，
-# 容器内无 docker CLI 时无法采集（属环境限制，非阻塞）。
 KEY_LOG_PATHS: dict[str, str] = {
+    "nginx-error": "/var/log/nginx/error.log",         # nginx 错误日志
+    "nginx-access": "/var/log/nginx/access.log",       # nginx 访问日志
     "ollama": "/var/log/galaxy-diag/ollama.log",       # Ollama LLM 服务日志
     # 故障注入：测试环境专用的故障模拟机制
     # /var/log/.fault-fill-* 为磁盘填充故障，/var/log/.fault-inode-* 为 inode 耗尽故障
