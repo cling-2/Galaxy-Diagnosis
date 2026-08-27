@@ -1,0 +1,13 @@
+# 排除无关大目录，加速 build context 传输
+venv/
+.git/
+tests/
+docs/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.history/
+.claude/
+# 排除外层无关文件（galaxy-diag 之外的）
+# 注意：deploy/offline/ 必须保留（含 ollama 与模型，构建必需）
