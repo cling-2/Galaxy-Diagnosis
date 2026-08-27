@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# 伪造 docker CLI：模拟 galaxy-api 容器退出（failed）+ config mismatch 日志
+set -uo pipefail
+
+case "$1" in
+  ps)
+    if [[ "$2" == "-a" ]]; then
+      # docker ps -a --format '{{.Names}}\t{{.Status}}'
+      printf 'galaxy-api\tExited (1) 2 minutes ago\n'
+      printf 'galaxy-network\tUp 3 hours\n'
+      printf 'galaxy-storage\tUp 3 hours\n'
+      printf 'galaxy-control\tUp 3 hours\n'
+      printf 'galaxy-compute\tUp 3 hours\n'
+      printf 'galaxy-scheduler\tUp 3 hours\n'
+      exit 0
+    else
+      # docker ps --format '{{.ID}}\t{{.Names}}' （只列运行中的）
+      printf 'a1b2c3d4\tgalaxy-network\n'
+      printf 'e5f6g7h8\tgalaxy-storage\n'
+      exit 0
+    fi
+    ;;
+  logs)
+    # docker logs --tail 50 <id>  /  docker logs <name>
+    printf '[2026-08-25 10:12:03] FATAL galaxy-api: config version mismatch: found v2.3 schema in /etc/galaxy/api.conf, expected v2.4\n'
+    printf '[2026-08-25 10:12:03] ERROR galaxy-api: refusing to start due to incompatible configuration\n'
+    printf '[2026-08-25 10:12:04] ERROR galaxy-api: startup aborted, stale config from previous upgrade\n'
+    exit 0
+    ;;
+  network)
+    printf 'NETWORK ID     NAME             DRIVER    SCOPE\n'
+    printf 'n1h2j3k4       bridge           bridge    local\n'
+    printf 'n5m6n7p8       host             host      local\n'
+    printf 'n9q0r1s2       galaxy-net       bridge    local\n'
+    exit 0
+    ;;
+  inspect|images|version|info)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 伪造 galaxy-api 二进制：接受任意子命令（如 config init --version v2.4），exit 0
+set -uo pipefail
+# 模拟配置重新生成成功
+if [[ "$1" == "config" ]]; then
+  # 查找 --version 后的参数，否则取最后一个参数
+  ver=""
+  for ((i=1; i<=$#; i++)); do
+    if [[ "${!i}" == "--version" && $((i+1)) -le $# ]]; then
+      next=$((i+1))
+      ver="${!next}"
+    fi
+  done
+  printf 'galaxy-api: configuration regenerated for version %s\n' "${ver:-v2.4}"
+fi
+exit 0

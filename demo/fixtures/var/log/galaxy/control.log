@@ -1,0 +1,7 @@
+2026-08-25 10:11:50 INFO  galaxy-control: platform upgrade to v2.4 started
+2026-08-25 10:11:55 INFO  galaxy-control: migrating components
+2026-08-25 10:12:00 WARN  galaxy-control: galaxy-api config schema mismatch detected
+2026-08-25 10:12:03 ERROR galaxy-api: config version mismatch: found v2.3 schema in /etc/galaxy/api.conf, expected v2.4
+2026-08-25 10:12:03 FATAL galaxy-api: refusing to start due to incompatible configuration
+2026-08-25 10:12:04 ERROR galaxy-api: startup aborted, stale config from previous upgrade
+2026-08-25 10:12:05 ERROR galaxy-control: component galaxy-api failed to come up

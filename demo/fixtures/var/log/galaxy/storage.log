@@ -1,0 +1,3 @@
+2026-08-25 10:11:50 INFO galaxy-storage: service started normally
+2026-08-25 10:12:00 INFO galaxy-storage: all volumes mounted
+2026-08-25 10:13:00 INFO galaxy-storage: health check passed

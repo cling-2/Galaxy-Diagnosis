@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# 伪造 journalctl：返回 config version mismatch 错误日志
+set -uo pipefail
+
+# journalctl -u <name> --no-pager -n 200
+printf '[2026-08-25 10:12:03] galaxy-api[1234]: FATAL config version mismatch: found v2.3 schema in /etc/galaxy/api.conf, expected v2.4\n'
+printf '[2026-08-25 10:12:03] galaxy-api[1234]: ERROR refusing to start due to incompatible configuration\n'
+printf '[2026-08-25 10:12:04] galaxy-api[1234]: ERROR startup aborted, stale config from previous upgrade\n'
+exit 0

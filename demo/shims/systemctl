@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 伪造 systemctl：status/is-active 返回 active；restart 受 /tmp/restart_should_fail 标志控制
+set -uo pipefail
+
+case "$1" in
+  is-active)
+    # systemctl is-active <comp1> <comp2> ...  每行一个状态
+    shift
+    for comp in "$@"; do
+      case "$comp" in
+        galaxy-api) printf 'failed\n' ;;
+        *)          printf 'active\n' ;;
+      esac
+    done
+    exit 0
+    ;;
+  status)
+    # systemctl status <service> [--no-pager -l]
+    printf '● galaxy-api.service - Galaxy API Gateway\n'
+    printf '     Loaded: loaded (/etc/systemd/system/galaxy-api.service; enabled)\n'
+    printf '     Active: active (running) since 2026-08-25 10:30:00 UTC\n'
+    printf '   Main PID: 1234 (galaxy-api)\n'
+    exit 0
+    ;;
+  restart)
+    # systemctl restart <service>
+    if [[ -f /tmp/restart_should_fail ]]; then
+      rm -f /tmp/restart_should_fail
+      printf 'Failed to restart %s: job for service failed (config version mismatch)\n' "${2:-service}" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  start|stop|reload|enable|disable|daemon-reload)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
